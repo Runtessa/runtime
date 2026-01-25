@@ -5,6 +5,8 @@ import { Account } from '../entities/Account';
 import { Secret } from '../entities/Secret';
 import { ModuleEntity } from '../entities/Module';
 import { UIPackage } from '../entities/UIEntities';
+import { ModuleRevision } from '../entities/ModuleRevision';
+import { UIPackageRevision } from '../entities/UIPackageRevision';
 
 const connectionOptions: DataSourceOptions = {
   type: 'postgres',
@@ -16,7 +18,7 @@ const connectionOptions: DataSourceOptions = {
   database: process.env.DB_NAME,
   synchronize: true,
   logging: process.env.DB_LOGGING === 'true',
-  entities: [Tenant, Account, Secret, ModuleEntity, UIPackage],
+  entities: [Tenant, Account, Secret, ModuleEntity, UIPackage, ModuleRevision, UIPackageRevision],
   subscribers: [],
   migrations: [],
 };
