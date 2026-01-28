@@ -62,7 +62,9 @@ export const getCoreGlobalDataSource = async () => {
         try {
           const hasGlobalTable = await queryRunner.hasTable('global_ui_packages');
           const hasFileTable = await queryRunner.hasTable('global_ui_package_files');
-          if (!hasGlobalTable || !hasFileTable) {
+          const hasDraftVersion =
+            hasGlobalTable && (await queryRunner.hasColumn('global_ui_packages', 'draft_version'));
+          if (!hasGlobalTable || !hasFileTable || !hasDraftVersion) {
             await CoreGlobalDataSource.synchronize();
           }
         } finally {
