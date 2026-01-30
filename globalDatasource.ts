@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { DataSource, DataSourceOptions } from 'typeorm';
-import { GlobalUIPackage } from '../entities/GlobalUIPackage';
-import { GlobalUIPackageFile } from '../entities/GlobalUIPackageFile';
+import { GlobalUIPackage } from '@idp/shared';
+import { GlobalUIPackageFile } from '@idp/shared';
 
 const dbType = (process.env.CORE_DB_TYPE ||
   process.env.DB_TYPE ||

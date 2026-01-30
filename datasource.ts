@@ -1,14 +1,14 @@
 import 'reflect-metadata';
 import { DataSource, DataSourceOptions } from 'typeorm';
-import { Tenant } from '../entities/Tenant';
-import { Account } from '../entities/Account';
-import { Secret } from '../entities/Secret';
-import { ModuleEntity } from '../entities/Module';
-import { UIPackage } from '../entities/UIEntities';
-import { ModuleRevision } from '../entities/ModuleRevision';
-import { UIPackageRevision } from '../entities/UIPackageRevision';
-import { GlobalUIPackage } from '../entities/GlobalUIPackage';
-import { GlobalUIPackageFile } from '../entities/GlobalUIPackageFile';
+import { Tenant } from '@idp/shared';
+import { Account } from '@idp/shared';
+import { Secret } from '@idp/shared';
+import { ModuleEntity } from '@idp/shared';
+import { UIPackage } from '@idp/shared';
+import { ModuleRevision } from '@idp/shared';
+import { UIPackageRevision } from '@idp/shared';
+import { GlobalUIPackage } from '@idp/shared';
+import { GlobalUIPackageFile } from '@idp/shared';
 
 const connectionOptions: DataSourceOptions = {
   type: 'postgres',
