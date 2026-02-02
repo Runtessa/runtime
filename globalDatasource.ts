@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { DataSource, DataSourceOptions } from 'typeorm';
+import { GlobalModulePackage } from '@idp/shared';
+import { GlobalModulePackageFile } from '@idp/shared';
 import { GlobalUIPackage } from '@idp/shared';
 import { GlobalUIPackageFile } from '@idp/shared';
 
@@ -33,7 +35,12 @@ const coreOptions = {
   database: dbName,
   logging: false,
   synchronize: false,
-  entities: [GlobalUIPackage, GlobalUIPackageFile],
+  entities: [
+    GlobalUIPackage,
+    GlobalUIPackageFile,
+    GlobalModulePackage,
+    GlobalModulePackageFile,
+  ],
 } as DataSourceOptions;
 
 const CoreGlobalDataSource = new DataSource(coreOptions);
@@ -64,7 +71,19 @@ export const getCoreGlobalDataSource = async () => {
           const hasFileTable = await queryRunner.hasTable('global_ui_package_files');
           const hasDraftVersion =
             hasGlobalTable && (await queryRunner.hasColumn('global_ui_packages', 'draft_version'));
-          if (!hasGlobalTable || !hasFileTable || !hasDraftVersion) {
+          const hasModuleTable = await queryRunner.hasTable('global_module_packages');
+          const hasModuleFileTable = await queryRunner.hasTable('global_module_package_files');
+          const hasModuleDraft =
+            hasModuleTable &&
+            (await queryRunner.hasColumn('global_module_packages', 'draft_version'));
+          if (
+            !hasGlobalTable ||
+            !hasFileTable ||
+            !hasDraftVersion ||
+            !hasModuleTable ||
+            !hasModuleFileTable ||
+            !hasModuleDraft
+          ) {
             await CoreGlobalDataSource.synchronize();
           }
         } finally {
