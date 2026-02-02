@@ -7,6 +7,7 @@ import { ModuleEntity } from '@idp/shared';
 import { UIPackage } from '@idp/shared';
 import { ModuleRevision } from '@idp/shared';
 import { UIPackageRevision } from '@idp/shared';
+import { GlobalModuleEndpoint } from '@idp/shared';
 import { GlobalModulePackage } from '@idp/shared';
 import { GlobalModulePackageFile } from '@idp/shared';
 import { GlobalUIPackage } from '@idp/shared';
@@ -28,6 +29,7 @@ const connectionOptions: DataSourceOptions = {
     Secret,
     ModuleEntity,
     UIPackage,
+    GlobalModuleEndpoint,
     GlobalModulePackage,
     GlobalModulePackageFile,
     GlobalUIPackage,
