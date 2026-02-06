@@ -6,6 +6,7 @@ import { Secret } from '@idp/shared';
 import { ModuleEntity } from '@idp/shared';
 import { UIPackage } from '@idp/shared';
 import { ModuleRevision } from '@idp/shared';
+import { OrmModel } from '@idp/shared';
 import { UIPackageRevision } from '@idp/shared';
 import { GlobalModuleEndpoint } from '@idp/shared';
 import { GlobalModulePackage } from '@idp/shared';
@@ -36,6 +37,7 @@ const connectionOptions: DataSourceOptions = {
     GlobalUIPackageFile,
     ModuleRevision,
     UIPackageRevision,
+    OrmModel,
   ],
   subscribers: [],
   migrations: [],
