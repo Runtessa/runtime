@@ -202,27 +202,35 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
   const cache = new Map<string, any>();
 
   const localRequire = (request: string, from: string) => {
-    if (request === 'typeorm') {
+    const normalizedRequest = String(request || '').trim();
+    if (
+      normalizedRequest === 'typeorm' ||
+      normalizedRequest.startsWith('typeorm/')
+    ) {
       return typeorm;
     }
-    let resolved = resolveModule(request, from, moduleMap);
+    let resolved = resolveModule(normalizedRequest, from, moduleMap);
     if (!moduleMap.has(resolved)) {
-      const fallback = findByBasename(request, moduleMap) || findKeyInsensitive(request, moduleMap);
+      const fallback =
+        findByBasename(normalizedRequest, moduleMap) ||
+        findKeyInsensitive(normalizedRequest, moduleMap);
       if (fallback) {
         resolved = fallback;
       }
     }
-    const isBare = !request.startsWith('.') && !request.startsWith('/');
-    const isScoped = request.startsWith('@');
-    const looksLikeFile = request.endsWith('.js') || request.includes('/');
+    const isBare =
+      !normalizedRequest.startsWith('.') && !normalizedRequest.startsWith('/');
+    const isScoped = normalizedRequest.startsWith('@');
+    const looksLikeFile =
+      normalizedRequest.endsWith('.js') || normalizedRequest.includes('/');
     if (isBare && !moduleMap.has(resolved)) {
-      if (isScoped || (!looksLikeFile && !request.includes('.'))) {
-        return rootRequire(request);
+      if (isScoped || (!looksLikeFile && !normalizedRequest.includes('.'))) {
+        return rootRequire(normalizedRequest);
       }
-      throw new Error(`Cannot find module ${request}`);
+      throw new Error(`Cannot find module ${normalizedRequest}`);
     }
     if (!moduleMap.has(resolved)) {
-      throw new Error(`Cannot find module ${request}`);
+      throw new Error(`Cannot find module ${normalizedRequest}`);
     }
     if (cache.has(resolved)) return cache.get(resolved);
     const code = moduleMap.get(resolved) || '';
@@ -248,13 +256,8 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
   });
 
   const getMetadataStorage = () => {
-    try {
-      const typeorm = rootRequire('typeorm') as { getMetadataArgsStorage?: () => any };
-      if (typeof typeorm?.getMetadataArgsStorage === 'function') {
-        return typeorm.getMetadataArgsStorage();
-      }
-    } catch {
-      // ignore
+    if (typeof (typeorm as any)?.getMetadataArgsStorage === 'function') {
+      return (typeorm as any).getMetadataArgsStorage();
     }
     return null;
   };
@@ -274,7 +277,15 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
   };
 
   exportsList.forEach((exports) => {
-    if (!exports || typeof exports !== 'object') return;
+    if (!exports) return;
+    if (typeof exports === 'function') {
+      if (metadataTargets.has(exports)) {
+        pushEntity(exports.name || 'Entity', exports);
+        matched += 1;
+      }
+      return;
+    }
+    if (typeof exports !== 'object') return;
     Object.entries(exports).forEach(([key, value]) => {
       if (typeof value !== 'function') return;
       if (metadataTargets.has(value)) {
@@ -286,7 +297,12 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
 
   if (matched === 0) {
     exportsList.forEach((exports) => {
-      if (!exports || typeof exports !== 'object') return;
+      if (!exports) return;
+      if (typeof exports === 'function') {
+        pushEntity(exports.name || 'Entity', exports);
+        return;
+      }
+      if (typeof exports !== 'object') return;
       Object.entries(exports).forEach(([key, value]) => {
         if (typeof value !== 'function') return;
         pushEntity(key, value);
