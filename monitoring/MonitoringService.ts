@@ -8,7 +8,7 @@ import { Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
 type TenantWindowStat = {
-  tenantId: string;
+  tenantId: string | null;
   tenantHostname: string;
   requests: number;
   errors: number;
@@ -165,6 +165,19 @@ export class MonitoringService {
     this.timer = null;
   }
 
+  private resolveTenantHostname(req: Request) {
+    const headerOverride = (req.headers['x-tenant-host'] as string | undefined)
+      ?.toLowerCase()
+      .trim();
+    let hostname = (req.hostname || '').toLowerCase().trim();
+
+    if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1') {
+      hostname = headerOverride || '';
+    }
+
+    return hostname || '';
+  }
+
   middleware() {
     return (req: Request, res: Response, next: NextFunction) => {
       const startedAt = process.hrtime.bigint();
@@ -174,8 +187,8 @@ export class MonitoringService {
       res.on('finish', () => {
         const tenantReq = req as TenantRequest;
         const tenant = tenantReq.tenant as Tenant | undefined;
-        const tenantId = tenant?.id || '';
-        const tenantHostname = tenant?.hostname || '';
+        const tenantId = tenant?.id || null;
+        const tenantHostname = tenant?.hostname || this.resolveTenantHostname(req);
         const latencyMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
         const statusCode = res.statusCode || 0;
         const contentLength = Number.parseInt(String(res.getHeader('content-length') || '0'), 10);
@@ -186,7 +199,7 @@ export class MonitoringService {
         this.globalNetworkOutBytes += bytesOut;
         if (statusCode >= 500) this.globalErrors += 1;
 
-        if (tenantId) {
+        if (tenantId || tenantHostname) {
           const tenantStat = this.ensureTenantWindowStat(tenantId, tenantHostname);
           tenantStat.networkInBytes += bytesIn;
           tenantStat.requests += 1;
@@ -232,15 +245,21 @@ export class MonitoringService {
     return `${base.replace(/\/+$/, '')}/api/admin/monitoring/ingest`;
   }
 
-  private ensureTenantWindowStat(tenantId: string, tenantHostname: string): TenantWindowStat {
-    const existing = this.tenantWindowStats.get(tenantId);
+  private tenantKey(tenantId: string | null, tenantHostname: string) {
+    if (tenantId) return `id:${tenantId}`;
+    return `host:${tenantHostname || 'unknown'}`;
+  }
+
+  private ensureTenantWindowStat(tenantId: string | null, tenantHostname: string): TenantWindowStat {
+    const key = this.tenantKey(tenantId, tenantHostname);
+    const existing = this.tenantWindowStats.get(key);
     if (existing) {
       if (tenantHostname) existing.tenantHostname = tenantHostname;
       return existing;
     }
 
     const created: TenantWindowStat = {
-      tenantId,
+      tenantId: tenantId || null,
       tenantHostname,
       requests: 0,
       errors: 0,
@@ -250,7 +269,7 @@ export class MonitoringService {
       networkInBytes: 0,
       networkOutBytes: 0,
     };
-    this.tenantWindowStats.set(tenantId, created);
+    this.tenantWindowStats.set(key, created);
     return created;
   }
 
