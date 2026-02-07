@@ -5,6 +5,13 @@ import fs from 'fs';
 import * as typeorm from 'typeorm';
 import { OrmModel } from '@idp/shared';
 
+const getNodeRequire = () => {
+  const nonWebpack = (globalThis as any).__non_webpack_require__;
+  if (typeof nonWebpack === 'function') return nonWebpack as (id: string) => any;
+  if (typeof require === 'function') return require as (id: string) => any;
+  return null;
+};
+
 const compileOrmSource = (source: string) => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -171,12 +178,9 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
 
   const rootRequire = (() => {
     const candidates: Array<(id: string) => any> = [];
-    try {
-      if (typeof require === 'function') {
-        candidates.push((id: string) => require(id));
-      }
-    } catch {
-      // ignore
+    const nodeRequire = getNodeRequire();
+    if (nodeRequire) {
+      candidates.push((id: string) => nodeRequire(id));
     }
     const cwd = process.cwd();
     const roots = [cwd, path.resolve(cwd, '..'), path.resolve(cwd, '../..')];
@@ -190,6 +194,9 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
       }
     });
     return (id: string) => {
+      if (id === 'typeorm' || id.startsWith('typeorm/')) {
+        return typeorm;
+      }
       for (const candidate of candidates) {
         try {
           return candidate(id);
@@ -221,11 +228,9 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
   const cache = new Map<string, any>();
 
   const localRequire = (request: string, from: string) => {
-    const normalizedRequest = String(request || '').trim();
-    if (
-      normalizedRequest === 'typeorm' ||
-      normalizedRequest.startsWith('typeorm/')
-    ) {
+    const normalizedRequest = String(request || '').replace(/\0/g, '').trim();
+    const lowered = normalizedRequest.toLowerCase();
+    if (lowered === 'typeorm' || lowered.startsWith('typeorm/')) {
       return typeorm;
     }
     let resolved = resolveModule(normalizedRequest, from, moduleMap);
