@@ -8,8 +8,7 @@ import { OrmModel } from '@idp/shared';
 const getNodeRequire = () => {
   const nonWebpack = (globalThis as any).__non_webpack_require__;
   if (typeof nonWebpack === 'function') return nonWebpack as (id: string) => any;
-  if (typeof require === 'function') return require as (id: string) => any;
-  return null;
+  return typeof require === 'function' ? (require as (id: string) => any) : null;
 };
 
 const compileOrmSource = (source: string) => {
@@ -194,7 +193,8 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
       }
     });
     return (id: string) => {
-      if (id === 'typeorm' || id.startsWith('typeorm/')) {
+      const loweredId = String(id).toLowerCase();
+      if (loweredId === 'typeorm' || loweredId.startsWith('typeorm/')) {
         return typeorm;
       }
       for (const candidate of candidates) {
@@ -243,6 +243,13 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
         resolved = fallback;
       }
     }
+    if (!moduleMap.has(resolved)) {
+      const trimmed = normalizedRequest.replace(/^\.\/+/, '');
+      const fallback = findByBasename(trimmed, moduleMap);
+      if (fallback) {
+        resolved = fallback;
+      }
+    }
     const isBare =
       !normalizedRequest.startsWith('.') && !normalizedRequest.startsWith('/');
     const isScoped = normalizedRequest.startsWith('@');
@@ -255,7 +262,10 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
       throw new Error(`Cannot find module ${normalizedRequest}`);
     }
     if (!moduleMap.has(resolved)) {
-      throw new Error(`Cannot find module ${normalizedRequest}`);
+      const available = Array.from(moduleMap.keys()).slice(0, 5).join(', ');
+      throw new Error(
+        `Cannot find module ${normalizedRequest}. Known models: ${available || 'none'}`
+      );
     }
     if (cache.has(resolved)) return cache.get(resolved);
     const code = moduleMap.get(resolved) || '';
