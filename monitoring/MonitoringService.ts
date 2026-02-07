@@ -96,7 +96,8 @@ type AlertEventPayload = {
 
 const MB = 1024 * 1024;
 const DEFAULT_INTERVAL_MS = 4000;
-const DEFAULT_RETENTION = 1440;
+// Keep one day by default at ~4s sampling cadence.
+const DEFAULT_RETENTION = 21600;
 const ALERT_RETENTION = 5000;
 const MAX_LATENCY_SAMPLES = 2000;
 const KEY = {
