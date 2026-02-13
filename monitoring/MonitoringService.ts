@@ -110,6 +110,13 @@ const KEY = {
   snapshots: (instanceKey: string) => `monitoring:snapshots:${instanceKey}`,
 };
 
+const isTrue = (value: string | undefined, fallback = false) => {
+  if (!value) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return fallback;
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+
 export class MonitoringService {
   private readonly intervalMs: number;
   private readonly retention: number;
@@ -240,10 +247,31 @@ export class MonitoringService {
 
   private resolveIngestUrl() {
     const explicit = process.env.MONITORING_SERVER_INGEST_URL?.trim();
-    if (explicit) return explicit;
+    if (explicit) {
+      if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(explicit)) {
+        console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_INGEST_URL is not HTTPS');
+        return null;
+      }
+      return explicit;
+    }
     const base = process.env.MONITORING_SERVER_URL?.trim();
     if (!base) return null;
-    return `${base.replace(/\/+$/, '')}/api/admin/monitoring/ingest`;
+    if (
+      /\/api\/admin\/monitoring\/ingest\/?$/i.test(base) ||
+      /\/ingest\/?$/i.test(base)
+    ) {
+      if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(base)) {
+        console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_URL is not HTTPS');
+        return null;
+      }
+      return base;
+    }
+    const url = `${base.replace(/\/+$/, '')}/api/admin/monitoring/ingest`;
+    if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(url)) {
+      console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_URL resolved to non-HTTPS ingest URL');
+      return null;
+    }
+    return url;
   }
 
   private tenantKey(tenantId: string | null, tenantHostname: string) {
