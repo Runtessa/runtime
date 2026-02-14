@@ -2,6 +2,8 @@ import os from 'os';
 import { statfs } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { monitorEventLoopDelay } from 'perf_hooks';
+import * as http from 'http';
+import * as https from 'https';
 import Redis from 'ioredis';
 import { Request, Response, NextFunction } from 'express';
 import { Tenant } from '@idp/shared';
@@ -140,6 +142,7 @@ export class MonitoringService {
   private redisUnavailableLogged = false;
   private readonly ingestUrl: string | null;
   private readonly ingestToken: string | null;
+  private readonly ingestInsecureTls: boolean;
   private ingestUnavailableLogged = false;
 
   constructor() {
@@ -155,6 +158,7 @@ export class MonitoringService {
     this.storagePath = process.env.MONITORING_STORAGE_PATH?.trim() || process.cwd();
     this.ingestUrl = this.resolveIngestUrl();
     this.ingestToken = process.env.MONITORING_SERVER_TOKEN?.trim() || null;
+    this.ingestInsecureTls = isTrue(process.env.MONITORING_SERVER_INSECURE_TLS, false);
     this.redis = this.getRedisClient();
     this.eventLoop.enable();
   }
@@ -556,29 +560,65 @@ export class MonitoringService {
   private async forwardMonitoringData(payload: { snapshot?: SnapshotPayload; alert?: AlertEventPayload }) {
     if (!this.ingestUrl) return;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    timeout.unref?.();
-
     try {
-      await fetch(this.ingestUrl, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(this.ingestToken ? { authorization: `Bearer ${this.ingestToken}` } : {}),
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const body = JSON.stringify(payload);
+      await this.postMonitoringPayload(this.ingestUrl, body);
       this.ingestUnavailableLogged = false;
     } catch (error) {
       if (!this.ingestUnavailableLogged) {
         this.ingestUnavailableLogged = true;
         console.warn(`[monitoring] ingest unavailable: ${(error as Error).message}`);
       }
-    } finally {
-      clearTimeout(timeout);
     }
+  }
+
+  private async postMonitoringPayload(urlString: string, body: string) {
+    await new Promise<void>((resolve, reject) => {
+      const target = new URL(urlString);
+      const isHttps = target.protocol === 'https:';
+      const client = isHttps ? https : http;
+      const req = client.request(
+        {
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port: target.port ? Number(target.port) : undefined,
+          path: `${target.pathname}${target.search}`,
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body).toString(),
+            ...(this.ingestToken ? { authorization: `Bearer ${this.ingestToken}` } : {}),
+          },
+          rejectUnauthorized: isHttps ? !this.ingestInsecureTls : undefined,
+        },
+        (res) => {
+          const status = Number(res.statusCode || 0);
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+          });
+          res.on('end', () => {
+            if (status >= 200 && status < 300) {
+              resolve();
+              return;
+            }
+            const responseText = Buffer.concat(chunks).toString('utf8').trim();
+            reject(
+              new Error(
+                `ingest returned ${status}${responseText ? `: ${responseText}` : ''}`
+              )
+            );
+          });
+        }
+      );
+
+      req.setTimeout(2000, () => {
+        req.destroy(new Error('ingest timeout'));
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
   }
 
   private resolveSnapshotMetric(metricKey: string, snapshot: SnapshotPayload): number {
