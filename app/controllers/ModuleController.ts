@@ -1,0 +1,360 @@
+import { NextFunction, Response } from 'express';
+import { DataSource } from 'typeorm';
+import { AppError } from '../../common/AppError';
+import { generateVersion } from '../../common/version';
+import { publishedCache } from '../../core/publishedCache';
+import { HttpMethod, ModuleEntity, ModuleRevision, Tenant } from '@idp/shared';
+import { TenantRequest } from '../../types/RequestContext';
+
+export class ModuleController {
+  constructor(private readonly dataSource: DataSource) {}
+
+  list = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const modules = await repo.find({
+        where: { tenant: { id: req.tenant!.id } },
+        order: { routePath: 'ASC', method: 'ASC' },
+      });
+      return res.json(modules.map(this.serialize));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  getById = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+      return res.json(this.serialize(mod));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  create = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const { routePath, method, code } = req.body ?? {};
+      const normalizedRoute = this.normalizeRoute(routePath);
+      const normalizedMethod = this.normalizeMethod(method);
+      const codeBody = this.normalizeCode(code);
+      const fileExtension = this.normalizeFileExtension(req.body?.fileExtension);
+
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const existing = await repo.findOne({
+        where: {
+          tenant: { id: req.tenant!.id },
+          routePath: normalizedRoute,
+          method: normalizedMethod,
+        },
+      });
+      if (existing) {
+        return res.status(409).json({ error: 'Module already exists for route/method' });
+      }
+
+      const mod = repo.create({
+        routePath: normalizedRoute,
+        method: normalizedMethod,
+        code: codeBody,
+        fileExtension,
+        draftVersion: generateVersion(),
+        tenant: req.tenant!,
+      });
+      await repo.save(mod);
+      await this.ensureAclEndpoint(req.tenant as Tenant, normalizedRoute);
+      return res.status(201).json(this.serialize(mod));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  update = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+
+      const nextRoute = req.body?.routePath ? this.normalizeRoute(req.body.routePath) : mod.routePath;
+      const nextMethod = req.body?.method ? this.normalizeMethod(req.body.method) : mod.method;
+      const nextCode = req.body?.code !== undefined ? this.normalizeCode(req.body.code) : mod.code;
+      const nextExt =
+        req.body?.fileExtension !== undefined
+          ? this.normalizeFileExtension(req.body.fileExtension)
+          : mod.fileExtension;
+
+      if (nextRoute !== mod.routePath || nextMethod !== mod.method) {
+        const duplicate = await repo.findOne({
+          where: {
+            tenant: { id: req.tenant!.id },
+            routePath: nextRoute,
+            method: nextMethod,
+          },
+        });
+        if (duplicate && duplicate.id !== mod.id) {
+          return res.status(409).json({ error: 'Another module already uses this route/method' });
+        }
+      }
+
+      await this.createRevision(req, mod, 'update');
+
+    mod.routePath = nextRoute;
+    mod.method = nextMethod;
+    mod.code = nextCode;
+    mod.fileExtension = nextExt;
+    mod.draftVersion = generateVersion();
+    await repo.save(mod);
+    await this.ensureAclEndpoint(req.tenant as Tenant, nextRoute);
+
+      return res.json(this.serialize(mod));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  remove = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+      await this.createRevision(req, mod, 'delete');
+      await this.clearPublishedCache(mod, req.tenant!.id);
+      await repo.remove(mod);
+      return res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  listVersions = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+
+      const revRepo = this.dataSource.getRepository(ModuleRevision);
+      const revisions = await revRepo.find({
+        where: { module: { id: mod.id } },
+        order: { revision: 'DESC', createdAt: 'DESC' },
+      });
+      return res.json(revisions.map(this.serializeRevision));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  rollback = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+
+      const revRepo = this.dataSource.getRepository(ModuleRevision);
+      const revision = await revRepo.findOne({
+        where: { id: req.params.revisionId, module: { id: mod.id } },
+      });
+      if (!revision) {
+        return res.status(404).json({ error: 'Revision not found' });
+      }
+
+      if (revision.routePath !== mod.routePath || revision.method !== mod.method) {
+        const duplicate = await repo.findOne({
+          where: {
+            tenant: { id: req.tenant!.id },
+            routePath: revision.routePath,
+            method: revision.method,
+          },
+        });
+        if (duplicate && duplicate.id !== mod.id) {
+          return res.status(409).json({ error: 'Another module already uses this route/method' });
+        }
+      }
+
+      await this.createRevision(req, mod, 'rollback');
+
+      mod.routePath = revision.routePath;
+      mod.method = revision.method;
+      mod.code = revision.code;
+      mod.fileExtension = revision.fileExtension;
+      mod.draftVersion = generateVersion();
+      await repo.save(mod);
+
+      return res.json(this.serialize(mod));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  publish = async (req: TenantRequest, res: Response, next: NextFunction) => {
+    try {
+      this.ensureTenant(req);
+      const repo = this.dataSource.getRepository(ModuleEntity);
+      const mod = await repo.findOne({
+        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+      });
+      if (!mod) {
+        return res.status(404).json({ error: 'Module not found' });
+      }
+
+      const previousPublishedMethod = mod.publishedMethod ?? mod.method;
+      const nextPublishedMethod = mod.method;
+
+      mod.publishedVersion = generateVersion();
+      mod.publishedRoutePath = mod.routePath;
+      mod.publishedMethod = mod.method;
+      mod.publishedCode = mod.code;
+      mod.publishedFileExtension = mod.fileExtension;
+      mod.publishedAt = new Date();
+      await repo.save(mod);
+
+      await publishedCache.del(this.moduleCacheKey(req.tenant!.id, previousPublishedMethod));
+      await publishedCache.del(this.moduleCacheKey(req.tenant!.id, nextPublishedMethod));
+
+      return res.json(this.serialize(mod));
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  private ensureTenant(req: TenantRequest) {
+    if (!req.tenant) {
+      throw new AppError('Tenant required', 400);
+    }
+  }
+
+  private normalizeMethod(raw: unknown): HttpMethod {
+    if (typeof raw !== 'string') {
+      throw new AppError('method is required', 400);
+    }
+    const upper = raw.toUpperCase();
+    if (!Object.values(HttpMethod).includes(upper as HttpMethod)) {
+      throw new AppError('Invalid HTTP method', 400);
+    }
+    return upper as HttpMethod;
+  }
+
+  private normalizeRoute(raw: unknown): string {
+    if (typeof raw !== 'string' || !raw.trim()) {
+      throw new AppError('routePath is required', 400);
+    }
+    const normalized = raw.trim().startsWith('/') ? raw.trim() : `/${raw.trim()}`;
+    return normalized;
+  }
+
+  private normalizeCode(raw: unknown): string {
+    if (typeof raw !== 'string' || !raw.trim()) {
+      throw new AppError('code is required', 400);
+    }
+    return raw;
+  }
+
+  private normalizeFileExtension(raw: unknown): string {
+    const allowed = new Set(['js']);
+    if (!raw || typeof raw !== 'string') return 'js';
+    const normalized = raw.replace(/^\./, '').toLowerCase();
+    return allowed.has(normalized) ? normalized : 'js';
+  }
+
+  private async createRevision(req: TenantRequest, mod: ModuleEntity, action: string) {
+    const revRepo = this.dataSource.getRepository(ModuleRevision);
+    const last = await revRepo.findOne({
+      where: { module: { id: mod.id } },
+      order: { revision: 'DESC' },
+    });
+    const revision = revRepo.create({
+      module: mod,
+      tenant: req.tenant!,
+      revision: (last?.revision ?? 0) + 1,
+      routePath: mod.routePath,
+      method: mod.method,
+      code: mod.code,
+      fileExtension: mod.fileExtension,
+      action,
+      createdBy: req.account?.id ?? null,
+    });
+    await revRepo.save(revision);
+  }
+
+  private async ensureAclEndpoint(tenant: Tenant, routePath: string) {
+    const endpoints = (tenant.aclEndpoints ?? {}) as Record<
+      string,
+      { read?: string[]; write?: string[]; edit?: string[]; delete?: string[]; allowAnonymous?: boolean }
+    >;
+    if (endpoints[routePath]) return;
+    endpoints[routePath] = {
+      read: [],
+      write: [],
+      edit: [],
+      delete: [],
+      allowAnonymous: false,
+    };
+    tenant.aclEndpoints = endpoints as Tenant['aclEndpoints'];
+    const tenantRepo = this.dataSource.getRepository(Tenant);
+    await tenantRepo.save(tenant);
+  }
+
+  private moduleCacheKey(tenantId: string, method: HttpMethod) {
+    return `module:published:${tenantId}:${method}`;
+  }
+
+  private async clearPublishedCache(mod: ModuleEntity, tenantId: string) {
+    const method = mod.publishedMethod ?? mod.method;
+    await publishedCache.del(this.moduleCacheKey(tenantId, method));
+  }
+
+  private serialize(mod: ModuleEntity) {
+    return {
+      id: mod.id,
+      routePath: mod.routePath,
+      method: mod.method,
+      code: mod.code,
+      fileExtension: mod.fileExtension,
+      draftVersion: mod.draftVersion,
+      publishedVersion: mod.publishedVersion ?? undefined,
+      publishedAt: mod.publishedAt ?? undefined,
+      createdAt: mod.createdAt,
+      updatedAt: mod.updatedAt,
+    };
+  }
+
+  private serializeRevision(rev: ModuleRevision) {
+    return {
+      id: rev.id,
+      revision: rev.revision,
+      routePath: rev.routePath,
+      method: rev.method,
+      code: rev.code,
+      fileExtension: rev.fileExtension,
+      action: rev.action,
+      createdBy: rev.createdBy ?? undefined,
+      createdAt: rev.createdAt,
+    };
+  }
+}

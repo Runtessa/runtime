@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "baseUrl": "../..",
+    "paths": {
+      "@idp/shared": ["src/packages/shared/dist/index.d.ts"],
+      "@idp/shared/*": ["src/packages/shared/dist/*"]
+    }
+  },
+  "include": ["**/*"]
+}
