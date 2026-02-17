@@ -3,7 +3,6 @@ import 'reflect-metadata';
 import { AppDataSource, initializeDataSource } from './core/datasource';
 import { CryptoService } from './core/security/CryptoService';
 import { Tenant } from '@idp/shared';
-import { Account, AccountRole } from '@idp/shared';
 import { Secret } from '@idp/shared';
 import { ModuleEntity, HttpMethod } from '@idp/shared';
 
@@ -27,7 +26,6 @@ const seedTenants = [
   {
     hostname: 'dev.internal.local',
     resourceConfig: { memory: 512, timeout: 30000 },
-    adminEmail: 'admin@dev.internal.local',
     secrets: {
       PG_URL: 'postgres://postgres:postgres@localhost:5432/idpcore',
       API_KEY: 'dev-api-key',
@@ -36,7 +34,6 @@ const seedTenants = [
   {
     hostname: 'prod.internal.local',
     resourceConfig: { memory: 1024, timeout: 5000 },
-    adminEmail: 'admin@prod.internal.local',
     secrets: {
       PG_URL: 'postgres://postgres:postgres@localhost:5432/idpcore',
       API_KEY: 'prod-api-key',
@@ -57,7 +54,6 @@ const bootstrapSeed = async () => {
 
 const seedTenant = async (seed: (typeof seedTenants)[number]) => {
   const tenantRepo = AppDataSource.getRepository(Tenant);
-  const accountRepo = AppDataSource.getRepository(Account);
   const secretRepo = AppDataSource.getRepository(Secret);
   const moduleRepo = AppDataSource.getRepository(ModuleEntity);
 
@@ -75,19 +71,6 @@ const seedTenant = async (seed: (typeof seedTenants)[number]) => {
     tenant.isSuspended = false;
     await tenantRepo.save(tenant);
     console.log(`Updated tenant ${seed.hostname}`);
-  }
-
-  let admin = await accountRepo.findOne({ where: { email: seed.adminEmail, tenant: { id: tenant.id } } });
-  if (!admin) {
-    const passwordHash = await cryptoService.hashPassword('changeme');
-    admin = accountRepo.create({
-      email: seed.adminEmail,
-      passwordHash,
-      role: AccountRole.ADMIN,
-      tenant,
-    });
-    await accountRepo.save(admin);
-    console.log(`Created admin account ${seed.adminEmail}`);
   }
 
   for (const [keyName, value] of Object.entries(seed.secrets)) {

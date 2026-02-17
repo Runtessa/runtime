@@ -5,7 +5,7 @@ import { AppError } from '../common/AppError';
 import { initializeDataSource } from '../core/datasource';
 import { CryptoService } from '../core/security/CryptoService';
 import { AdapterFactory } from './AdapterFactory';
-import { AccountRole, Tenant } from '@idp/shared';
+import { Tenant } from '@idp/shared';
 
 if (!parentPort) {
   process.exit(1);
@@ -29,7 +29,7 @@ type SandboxRequestContext = {
   account?: {
     id: string;
     email: string;
-    role: AccountRole;
+    role: string;
   };
 };
 

@@ -1,8 +1,9 @@
 import vm from 'vm';
 import path from 'path';
 import { Worker } from 'worker_threads';
+import fs from 'fs';
 import { SandboxAdapters } from './AdapterFactory';
-import { AccountRole, Tenant } from '@idp/shared';
+import { Tenant } from '@idp/shared';
 import { AppError } from '../common/AppError';
 
 export interface SandboxRequestContext {
@@ -23,7 +24,7 @@ export interface SandboxRequestContext {
   account?: {
     id: string;
     email: string;
-    role: AccountRole;
+    role: string;
   };
 }
 
@@ -163,10 +164,29 @@ export class SandboxRunner {
     timeoutMs: number,
     memoryMb: number,
   ): Promise<SandboxResult> {
-    const workerPath = path.join(__dirname, 'sandboxWorker.js');
+    const jsWorkerPath = path.join(__dirname, 'sandboxWorker.js');
+    const tsWorkerPath = path.join(__dirname, 'sandboxWorker.ts');
+
+    let workerPath = jsWorkerPath;
+    let execArgv: string[] | undefined;
+
+    if (fs.existsSync(jsWorkerPath)) {
+      workerPath = jsWorkerPath;
+    } else if (fs.existsSync(tsWorkerPath)) {
+      // Development runtime (ts-node): execute worker directly from TypeScript source.
+      workerPath = tsWorkerPath;
+      execArgv = ['-r', 'ts-node/register/transpile-only'];
+    } else {
+      throw new AppError(
+        `Sandbox worker entry not found. Tried: ${jsWorkerPath}, ${tsWorkerPath}`,
+        500,
+      );
+    }
+
     return new Promise((resolve, reject) => {
       const worker = new Worker(workerPath, {
         resourceLimits: { maxOldGenerationSizeMb: memoryMb },
+        ...(execArgv ? { execArgv } : {}),
       });
 
       const cleanup = () => {

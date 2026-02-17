@@ -5,7 +5,7 @@ import { isDeveloperAccess } from '../../common/devAccess';
 import { publishedCache } from '../../core/publishedCache';
 import { AdapterFactory, SandboxAdapters } from '../../engine/AdapterFactory';
 import { SandboxRunner, SandboxRequestContext } from '../../engine/SandboxRunner';
-import { AccountRole, GlobalModuleEndpoint, GlobalModulePackage, HttpMethod, ModuleEntity, Tenant } from '@idp/shared';
+import { GlobalModuleEndpoint, GlobalModulePackage, HttpMethod, ModuleEntity, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
 
@@ -361,7 +361,7 @@ export class Dispatcher {
 
   private checkEndpointAccess(
     tenant: Tenant,
-    accountRole: AccountRole | string,
+    accountRole: string,
     module: ModuleLike,
     accountGroups: string[],
     requestPath?: string,

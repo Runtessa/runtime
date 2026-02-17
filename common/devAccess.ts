@@ -1,4 +1,3 @@
-import { AccountRole } from '@idp/shared';
 import { TenantRequest } from '../types/RequestContext';
 
 const isTruthy = (value: unknown) => {
@@ -12,9 +11,8 @@ export const isDeveloperAccess = (req: TenantRequest): boolean => {
   const previewHeader = req.headers['x-dev-preview'];
   if (isTruthy(previewHeader)) return true;
 
-  const role =
-    req.account?.role ??
-    (req.tokenPayload?.role as AccountRole | undefined) ??
-    undefined;
-  return role === AccountRole.DEVELOPER || role === AccountRole.ADMIN;
+  const role = String(req.account?.role ?? req.tokenPayload?.role ?? '')
+    .trim()
+    .toUpperCase();
+  return role === 'DEVELOPER' || role === 'ADMIN';
 };
