@@ -13,6 +13,7 @@ export interface CoreAuthUser {
   roles: string[];
   groups: string[];
   organizations: CoreAuthOrganization[];
+  tenantOrgRandId: string | null;
   authRandId: string | null;
   firstName: string | null;
   lastName: string | null;

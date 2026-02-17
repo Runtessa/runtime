@@ -77,6 +77,66 @@ export interface HttpResponse {
   body: string;
 }
 
+export interface TenantDirectoryOrganization {
+  randId: string;
+  code: string;
+  name: string;
+  parentOrgRandId: string | null;
+  path: string;
+  depth: number;
+}
+
+export interface TenantDirectoryUser {
+  randId: string;
+  email: string;
+  phoneNumber: string;
+  firstName: string;
+  lastName: string;
+  organizations: Array<{
+    orgRandId: string;
+    orgCode: string | null;
+    orgName: string | null;
+    orgPath: string | null;
+  }>;
+  roles: Array<{
+    roleRandId: string;
+    roleCode: string;
+    roleName: string;
+    orgRandId: string;
+    orgPath: string | null;
+  }>;
+  signupContext: {
+    orgRandId: string | null;
+    source: string;
+    changedAt: string;
+  } | null;
+}
+
+export interface TenantDirectoryOrgResponse {
+  tenantName: string;
+  rootOrg: TenantDirectoryOrganization | null;
+  organizations: TenantDirectoryOrganization[];
+  builtAt: string;
+  cacheTtlSec: number;
+}
+
+export interface TenantDirectoryOuResponse {
+  tenantName: string;
+  ou: TenantDirectoryOrganization;
+  descendants: TenantDirectoryOrganization[];
+  builtAt: string;
+  cacheTtlSec: number;
+}
+
+export interface TenantDirectoryUsersResponse {
+  tenantName: string;
+  ou: TenantDirectoryOrganization;
+  users: TenantDirectoryUser[];
+  total: number;
+  builtAt: string;
+  cacheTtlSec: number;
+}
+
 export interface SandboxAdapters {
   postgres: ReadWriteFactory<PostgresAdapter>;
   mysql: ReadWriteFactory<MysqlAdapter>;
@@ -90,6 +150,9 @@ export interface SandboxAdapters {
     request: (url: string, options?: HttpRequestOptions) => Promise<HttpResponse>;
   };
   compiler?: CompilerAdapter;
+  getOrg: () => Promise<TenantDirectoryOrgResponse>;
+  getOU: (ouPath: string) => Promise<TenantDirectoryOuResponse>;
+  getUsers: (ouPath: string) => Promise<TenantDirectoryUsersResponse>;
 }
 
 export class AdapterFactory {
@@ -137,6 +200,7 @@ export class AdapterFactory {
       require: (name: string, version?: string) =>
         this.loadSharedModule(name, version, allowDraftSharedModules),
     };
+    const tenantDirectory = this.buildTenantDirectoryAdapter(tenant);
 
     return {
       postgres,
@@ -149,6 +213,9 @@ export class AdapterFactory {
       shared,
       http: this.buildHttpAdapter(tenant),
       compiler: this.compilerAdapter,
+      getOrg: () => tenantDirectory.getOrg(),
+      getOU: (ouPath: string) => tenantDirectory.getOU(ouPath),
+      getUsers: (ouPath: string) => tenantDirectory.getUsers(ouPath),
     };
   }
 
@@ -1030,6 +1097,136 @@ export class AdapterFactory {
         breaker.fire(async () => {
           const command = new GetObjectCommand({ Bucket: params.bucket, Key: params.key });
           return getSignedUrl(client, command, { expiresIn: params.expiresIn ?? 900 });
+        }),
+    };
+  }
+
+  private readTenantSsoBlock(tenant: Tenant): Record<string, unknown> {
+    const adapterConfig = this.asObject((tenant.adapterConfig as unknown) || {});
+    const authBlock = this.asObject(this.getObjectValue(adapterConfig, 'auth'));
+    return {
+      ...this.asObject(this.getObjectValue(adapterConfig, 'sso')),
+      ...this.asObject(this.getObjectValue(authBlock, 'sso')),
+    };
+  }
+
+  private normalizeString(value: unknown): string | null {
+    const text = String(value || '').trim();
+    return text || null;
+  }
+
+  private async resolveTenantDirectoryAuthConfig(tenant: Tenant): Promise<{
+    tenantName: string;
+    authBaseUrl: string;
+    tenantSsoToken: string;
+    timeoutMs: number;
+  }> {
+    const ssoBlock = this.readTenantSsoBlock(tenant);
+    const authBaseUrl =
+      this.normalizeString(this.getObjectValue(ssoBlock, 'authBaseUrl')) ||
+      this.normalizeString(this.getObjectValue(ssoBlock, 'auth_base_url')) ||
+      this.normalizeString(process.env.CORE_SSO_AUTH_BASE_URL);
+    if (!authBaseUrl) {
+      throw new Error('Tenant SSO authBaseUrl is required for organization adapter');
+    }
+
+    const tenantTokenSecretKey =
+      this.normalizeString(this.getObjectValue(ssoBlock, 'tenantTokenSecretKey')) ||
+      this.normalizeString(this.getObjectValue(ssoBlock, 'tenant_token_secret_key')) ||
+      this.normalizeString(this.getObjectValue(ssoBlock, 'tenantSsoTokenSecretKey')) ||
+      'auth:sso:tenant_token';
+    const tenantSsoToken = await this.getSecretValue(tenant, tenantTokenSecretKey);
+    if (!tenantSsoToken) {
+      throw new Error(`Tenant SSO token is missing for tenant ${tenant.hostname}`);
+    }
+
+    const timeoutMs = Math.max(
+      500,
+      Number(
+        this.getObjectValue(ssoBlock, 'orgDirectoryTimeoutMs') ||
+          this.getObjectValue(ssoBlock, 'org_directory_timeout_ms') ||
+          this.getObjectValue(ssoBlock, 'orgAdapterTimeoutMs') ||
+          this.getObjectValue(ssoBlock, 'org_adapter_timeout_ms') ||
+          5000,
+      ) || 5000,
+    );
+
+    return {
+      tenantName: tenant.hostname,
+      authBaseUrl,
+      tenantSsoToken,
+      timeoutMs,
+    };
+  }
+
+  private buildTenantDirectoryAdapter(tenant: Tenant): {
+    getOrg: () => Promise<TenantDirectoryOrgResponse>;
+    getOU: (ouPath: string) => Promise<TenantDirectoryOuResponse>;
+    getUsers: (ouPath: string) => Promise<TenantDirectoryUsersResponse>;
+  } {
+    let configPromise:
+      | Promise<{
+          tenantName: string;
+          authBaseUrl: string;
+          tenantSsoToken: string;
+          timeoutMs: number;
+        }>
+      | null = null;
+
+    const readConfig = async () => {
+      if (!configPromise) {
+        configPromise = this.resolveTenantDirectoryAuthConfig(tenant);
+      }
+      return configPromise;
+    };
+
+    const request = async <T>(
+      endpointPath: string,
+      query: Record<string, string | null | undefined> = {},
+    ): Promise<T> => {
+      const config = await readConfig();
+      const url = new URL(endpointPath, config.authBaseUrl);
+      url.searchParams.set('tenant_name', config.tenantName);
+      Object.entries(query).forEach(([key, value]) => {
+        const normalized = String(value || '').trim();
+        if (normalized) {
+          url.searchParams.set(key, normalized);
+        }
+      });
+
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), config.timeoutMs);
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            Accept: 'application/json',
+            'X-Tenant-Sso-Token': config.tenantSsoToken,
+            'X-Tenant-Name': config.tenantName,
+          },
+        });
+        const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!response.ok) {
+          throw new Error(
+            String(payload.error || `Auth directory request failed (${response.status})`),
+          );
+        }
+        return payload as unknown as T;
+      } finally {
+        clearTimeout(timeoutHandle);
+      }
+    };
+
+    return {
+      getOrg: () => request<TenantDirectoryOrgResponse>('/api/tenant-directory/org'),
+      getOU: (ouPath: string) =>
+        request<TenantDirectoryOuResponse>('/api/tenant-directory/ou', {
+          ou_path: ouPath || '',
+        }),
+      getUsers: (ouPath: string) =>
+        request<TenantDirectoryUsersResponse>('/api/tenant-directory/users', {
+          ou_path: ouPath || '',
         }),
     };
   }

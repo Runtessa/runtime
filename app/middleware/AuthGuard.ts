@@ -38,16 +38,17 @@ const resolveAccountFromSession = async (
     tenantId: session.tenantId,
     role: session.user.role,
     exp: Math.floor(Date.now() / 1000) + 60,
-    metadata: {
-      sessionId: session.id,
-      authUserRandId: session.user.authRandId,
-      email: session.user.email,
-      roles: session.user.roles,
-      groups: session.user.groups,
-      organizations: session.user.organizations,
-      firstName: session.user.firstName,
-      lastName: session.user.lastName,
-    },
+      metadata: {
+        sessionId: session.id,
+        authUserRandId: session.user.authRandId,
+        email: session.user.email,
+        roles: session.user.roles,
+        groups: session.user.groups,
+        organizations: session.user.organizations,
+        tenantOrgRandId: session.user.tenantOrgRandId,
+        firstName: session.user.firstName,
+        lastName: session.user.lastName,
+      },
   };
   return session.user;
 };
@@ -84,6 +85,10 @@ const userFromTokenPayload = (payload: ReturnType<CryptoService["verifyToken"]>)
     roles,
     groups,
     organizations,
+    tenantOrgRandId:
+      typeof metadata.tenantOrgRandId === "string" && metadata.tenantOrgRandId.trim()
+        ? metadata.tenantOrgRandId.trim()
+        : null,
     authRandId:
       typeof metadata.authUserRandId === "string" && metadata.authUserRandId.trim()
         ? metadata.authUserRandId

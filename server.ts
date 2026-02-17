@@ -86,6 +86,8 @@ interface AuthUserInfo {
     orgCode?: string | null;
     orgName?: string | null;
   }> | null;
+  tenant_org_rand_id?: string | null;
+  tenantOrgRandId?: string | null;
   tenant_rand_id: string | null;
   tenant_name: string | null;
   tenant_code: string | null;
@@ -99,6 +101,22 @@ interface TenantSsoConfig {
   clientSecret: string;
   scope: string;
   tenantSsoToken: string;
+}
+
+interface TenantSsoOrgConfig {
+  staticOrgRandId: string | null;
+  orgIdQueryParam: string;
+  orgIdHeader: string;
+  adapterUrl: string | null;
+  adapterTimeoutMs: number;
+  adapterTokenSecretKey: string | null;
+  adapterRequired: boolean;
+}
+
+interface TenantOrgOption {
+  orgRandId: string;
+  code: string | null;
+  name: string | null;
 }
 
 const asObject = (value: unknown): Record<string, unknown> => {
@@ -204,6 +222,217 @@ const readTenantSecretValue = async (
   } catch {
     throw new AppError(`Tenant secret ${keyName} failed to decrypt`, 500);
   }
+};
+
+const readTenantSsoBlock = (tenantReq: TenantRequest): Record<string, unknown> => {
+  const adapterConfig = asObject(tenantReq.tenant?.adapterConfig);
+  const authBlock = asObject(adapterConfig.auth);
+  return {
+    ...asObject(adapterConfig.sso),
+    ...asObject(authBlock.sso),
+  };
+};
+
+const parseTenantSsoOrgConfig = (
+  tenantReq: TenantRequest,
+): TenantSsoOrgConfig => {
+  const ssoBlock = readTenantSsoBlock(tenantReq);
+  const orgIdQueryParamRaw = normalizeSecretValue(
+    String(
+      ssoBlock.orgIdQueryParam ||
+        ssoBlock.org_id_query_param ||
+        "tenant_org_id",
+    ),
+  );
+  const orgIdHeaderRaw = normalizeSecretValue(
+    String(
+      ssoBlock.orgIdHeader ||
+        ssoBlock.org_id_header ||
+        "x-tenant-org-id",
+    ),
+  );
+  const normalizedOrgIdQueryParam = String(orgIdQueryParamRaw || "tenant_org_id")
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+  const normalizedOrgIdHeader = String(orgIdHeaderRaw || "x-tenant-org-id")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "");
+  return {
+    staticOrgRandId: normalizeSecretValue(
+      String(
+        ssoBlock.orgId ||
+          ssoBlock.org_id ||
+          ssoBlock.tenantOrgRandId ||
+          ssoBlock.tenant_org_rand_id ||
+          "",
+      ),
+    ),
+    orgIdQueryParam: normalizedOrgIdQueryParam || "tenant_org_id",
+    orgIdHeader: normalizedOrgIdHeader || "x-tenant-org-id",
+    adapterUrl: normalizeSecretValue(
+      String(
+        ssoBlock.orgAdapterUrl ||
+          ssoBlock.org_adapter_url ||
+          "",
+      ),
+    ),
+    adapterTimeoutMs: Math.max(
+      300,
+      parseInt(String(ssoBlock.orgAdapterTimeoutMs || ssoBlock.org_adapter_timeout_ms || "3000"), 10) || 3000,
+    ),
+    adapterTokenSecretKey: normalizeSecretValue(
+      String(
+        ssoBlock.orgAdapterTokenSecretKey ||
+          ssoBlock.org_adapter_token_secret_key ||
+          "",
+      ),
+    ),
+    adapterRequired:
+      String(ssoBlock.orgAdapterRequired || ssoBlock.org_adapter_required || "false")
+        .trim()
+        .toLowerCase() === "true",
+  };
+};
+
+const parseOrgOptionsFromAdapterPayload = (value: unknown): TenantOrgOption[] => {
+  if (!Array.isArray(value)) return [];
+  const out: TenantOrgOption[] = [];
+  for (const item of value) {
+    const obj = asObject(item);
+    const orgRandId = normalizeSecretValue(
+      String(
+        obj.orgRandId ||
+          obj.org_rand_id ||
+          obj.id ||
+          "",
+      ),
+    );
+    if (!orgRandId) continue;
+    out.push({
+      orgRandId,
+      code: normalizeSecretValue(String(obj.code || obj.orgCode || obj.org_code || "")),
+      name: normalizeSecretValue(String(obj.name || obj.orgName || obj.org_name || "")),
+    });
+  }
+  return out;
+};
+
+const fetchTenantOrgAdapterPayload = async (
+  tenantReq: TenantRequest,
+  cryptoService: CryptoService,
+  returnTo: string,
+): Promise<{ defaultOrgRandId: string | null; organizations: TenantOrgOption[] }> => {
+  const orgConfig = parseTenantSsoOrgConfig(tenantReq);
+  if (!orgConfig.adapterUrl) {
+    return {
+      defaultOrgRandId: orgConfig.staticOrgRandId,
+      organizations: [],
+    };
+  }
+
+  try {
+    const url = new URL(orgConfig.adapterUrl);
+    url.searchParams.set("tenant_name", tenantReq.tenant?.hostname || "");
+    url.searchParams.set("tenant_id", tenantReq.tenant?.id || "");
+    url.searchParams.set("return_to", returnTo || "/");
+
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+    };
+    if (orgConfig.adapterTokenSecretKey) {
+      const token = await readTenantSecretValue(
+        tenantReq,
+        cryptoService,
+        orgConfig.adapterTokenSecretKey,
+      );
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), orgConfig.adapterTimeoutMs);
+    try {
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        if (orgConfig.adapterRequired) {
+          throw new AppError(`Tenant org adapter failed (${response.status})`, 503);
+        }
+        return {
+          defaultOrgRandId: orgConfig.staticOrgRandId,
+          organizations: [],
+        };
+      }
+
+      const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      const organizations = parseOrgOptionsFromAdapterPayload(payload.organizations);
+      const defaultOrgRandId =
+        normalizeSecretValue(
+          String(
+            payload.defaultOrgRandId ||
+              payload.default_org_rand_id ||
+              payload.orgRandId ||
+              payload.org_id ||
+              "",
+          ),
+        ) ||
+        orgConfig.staticOrgRandId ||
+        organizations[0]?.orgRandId ||
+        null;
+
+      return {
+        defaultOrgRandId,
+        organizations,
+      };
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  } catch (error) {
+    if (orgConfig.adapterRequired) {
+      throw error;
+    }
+    return {
+      defaultOrgRandId: orgConfig.staticOrgRandId,
+      organizations: [],
+    };
+  }
+};
+
+const resolveTenantOrgIdForSso = async (
+  req: Request,
+  tenantReq: TenantRequest,
+  cryptoService: CryptoService,
+  returnTo: string,
+): Promise<string | null> => {
+  const orgConfig = parseTenantSsoOrgConfig(tenantReq);
+  const queryOrgRandId = normalizeSecretValue(
+    String(
+      req.query.tenant_org_id ||
+        req.query[orgConfig.orgIdQueryParam] ||
+        req.query.org_id ||
+        "",
+    ),
+  );
+  if (queryOrgRandId) return queryOrgRandId;
+
+  const headerOrgRandId = normalizeSecretValue(
+    String(
+      req.headers[orgConfig.orgIdHeader] ||
+        req.headers["x-tenant-org-id"] ||
+        "",
+    ),
+  );
+  if (headerOrgRandId) return headerOrgRandId;
+
+  const adapterPayload = await fetchTenantOrgAdapterPayload(
+    tenantReq,
+    cryptoService,
+    returnTo,
+  );
+  return adapterPayload.defaultOrgRandId || orgConfig.staticOrgRandId || null;
 };
 
 const resolveTenantSsoConfig = async (
@@ -389,6 +618,12 @@ const bootstrap = async () => {
 
       const { codeVerifier, codeChallenge } = createPkcePair();
       const nonce = randomBytes(16).toString("hex");
+      const tenantOrgRandId = await resolveTenantOrgIdForSso(
+        req,
+        tenantReq,
+        cryptoService,
+        returnTo,
+      );
       const stateToken = cryptoService.signToken(
         {
           sub: "tenant-sso",
@@ -398,6 +633,7 @@ const bootstrap = async () => {
             returnTo,
             codeVerifier,
             clientId: tenantSso.clientId,
+            tenantOrgRandId,
           },
         },
         10 * 60,
@@ -419,6 +655,9 @@ const bootstrap = async () => {
         "allow_registration",
         String(tenantReq.tenant.allowRegistration ?? true),
       );
+      if (tenantOrgRandId) {
+        authorizeUrl.searchParams.set("tenant_org_id", tenantOrgRandId);
+      }
 
       res.cookie(CORE_SSO_STATE_COOKIE_NAME, stateToken, ssoStateCookieOptions);
       return res.redirect(authorizeUrl.toString());
@@ -460,6 +699,9 @@ const bootstrap = async () => {
       const returnTo = safeReturnTo(stateMeta.returnTo, "/");
       const codeVerifier = String(stateMeta.codeVerifier || "").trim();
       const expectedClientId = String(stateMeta.clientId || "").trim();
+      const expectedTenantOrgRandId = normalizeSecretValue(
+        String(stateMeta.tenantOrgRandId || stateMeta.tenant_org_rand_id || ""),
+      );
 
       if (!expectedNonce || expectedNonce !== returnedState) {
         throw new AppError("SSO state mismatch", 400);
@@ -483,6 +725,9 @@ const bootstrap = async () => {
       tokenForm.set("code_verifier", codeVerifier);
       tokenForm.set("tenant_name", tenantReq.tenant.hostname);
       tokenForm.set("tenant_sso_token", tenantSso.tenantSsoToken);
+      if (expectedTenantOrgRandId) {
+        tokenForm.set("tenant_org_id", expectedTenantOrgRandId);
+      }
 
       const tokenResponse = await fetch(new URL("/oauth/token", tenantSso.authBaseUrl), {
         method: "POST",
@@ -521,6 +766,16 @@ const bootstrap = async () => {
       if (userInfo.client_id && userInfo.client_id !== tenantSso.clientId) {
         throw new AppError("SSO client mismatch in userinfo response", 401);
       }
+      const userInfoTenantOrgRandId = normalizeSecretValue(
+        String(userInfo.tenant_org_rand_id || userInfo.tenantOrgRandId || ""),
+      );
+      if (
+        expectedTenantOrgRandId &&
+        userInfoTenantOrgRandId &&
+        userInfoTenantOrgRandId !== expectedTenantOrgRandId
+      ) {
+        throw new AppError("SSO tenant organization mismatch in userinfo response", 401);
+      }
       if (!userInfo.sub && !userInfo.email) {
         throw new AppError("SSO userinfo response missing user identity", 401);
       }
@@ -545,12 +800,15 @@ const bootstrap = async () => {
       );
       const organizations = normalizeOrganizations(userInfo.organizations);
       const effectiveRole = authRoles[0] || "USER";
+      const effectiveTenantOrgRandId =
+        userInfoTenantOrgRandId || null;
       const effectiveGroups = Array.from(
         new Set([
           ...normalizeStringArray(userInfo.groups),
           ...authRoles,
           ...organizations.map((org) => org.randId),
           ...organizations.map((org) => org.code || "").filter(Boolean),
+          ...(effectiveTenantOrgRandId ? [effectiveTenantOrgRandId] : []),
         ]),
       );
       const effectiveAuthUserId = String(userInfo.sub || "").trim() || null;
@@ -564,6 +822,7 @@ const bootstrap = async () => {
         roles: authRoles,
         groups: effectiveGroups,
         organizations,
+        tenantOrgRandId: effectiveTenantOrgRandId,
         authRandId: effectiveAuthUserId,
         firstName: userInfo.given_name || null,
         lastName: userInfo.family_name || null,
@@ -610,6 +869,7 @@ const bootstrap = async () => {
         roles: tenantReq.account.roles || [],
         groups: tenantReq.account.groups || [],
         organizations: tenantReq.account.organizations || [],
+        tenantOrgRandId: tenantReq.account.tenantOrgRandId || null,
         authRandId: tenantReq.account.authRandId || null,
         firstName: tenantReq.account.firstName || null,
         lastName: tenantReq.account.lastName || null,
@@ -628,6 +888,50 @@ const bootstrap = async () => {
     }
     await tenantSessionStore.touch(tenantReq.tenantSessionId);
     return res.status(200).json({ ok: true });
+  });
+
+  app.get("/api/auth/orgs", contextMiddleware, async (req, res, next) => {
+    try {
+      const tenantReq = req as TenantRequest;
+      if (!tenantReq.tenant) {
+        return res.status(400).json({ error: "Tenant required" });
+      }
+
+      const returnTo = safeReturnTo(req.query.returnTo ?? req.query.return_to, "/");
+      const orgConfig = parseTenantSsoOrgConfig(tenantReq);
+      const adapterPayload = await fetchTenantOrgAdapterPayload(
+        tenantReq,
+        cryptoService,
+        returnTo,
+      );
+      const requestedOrgRandId = normalizeSecretValue(
+        String(
+          req.query.tenant_org_id ||
+            req.query[orgConfig.orgIdQueryParam] ||
+            req.query.org_id ||
+            "",
+        ),
+      );
+      const effectiveOrgRandId =
+        requestedOrgRandId ||
+        adapterPayload.defaultOrgRandId ||
+        orgConfig.staticOrgRandId ||
+        null;
+
+      return res.status(200).json({
+        tenant: {
+          id: tenantReq.tenant.id,
+          hostname: tenantReq.tenant.hostname,
+        },
+        orgIdQueryParam: orgConfig.orgIdQueryParam,
+        orgIdHeader: orgConfig.orgIdHeader,
+        defaultOrgRandId: adapterPayload.defaultOrgRandId || orgConfig.staticOrgRandId || null,
+        selectedOrgRandId: effectiveOrgRandId,
+        organizations: adapterPayload.organizations,
+      });
+    } catch (error) {
+      next(error);
+    }
   });
   app.use(
     "/api",
