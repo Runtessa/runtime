@@ -93,9 +93,10 @@ export interface SandboxAdapters {
 }
 
 export class AdapterFactory {
-  private pgPools: Map<string, PgPool> = new Map();
-  private mysqlPools: Map<string, ReturnType<typeof createMySqlPool>> = new Map();
-  private mssqlPools: Map<string, ConnectionPool> = new Map();
+  private pgPools: Map<string, PgPool | PgPool[]> = new Map();
+  private mysqlPools: Map<string, ReturnType<typeof createMySqlPool> | ReturnType<typeof createMySqlPool>[]> =
+    new Map();
+  private mssqlPools: Map<string, ConnectionPool | ConnectionPool[]> = new Map();
   private redisClients: Map<string, Redis> = new Map();
   private kafkaProducers: Map<string, Producer> = new Map();
   private s3Clients: Map<string, S3Client> = new Map();
@@ -104,10 +105,13 @@ export class AdapterFactory {
     new Map();
 
   private breakers: Map<string, CircuitBreaker> = new Map();
+  private adapterRoundRobinCursor: Map<string, number> = new Map();
   private compilerAdapter: CompilerAdapter;
+  private runtimeStage: string;
 
   constructor(private readonly dataSource: DataSource, private readonly cryptoService: CryptoService) {
     this.compilerAdapter = new CompilerAdapter();
+    this.runtimeStage = this.resolveRuntimeStage();
   }
 
   build(
@@ -228,6 +232,195 @@ export class AdapterFactory {
     return br;
   }
 
+  private nextRoundRobinIndex(key: string, length: number): number {
+    if (length <= 1) return 0;
+    const current = this.adapterRoundRobinCursor.get(key) ?? 0;
+    const index = current % length;
+    this.adapterRoundRobinCursor.set(key, (index + 1) % length);
+    return index;
+  }
+
+  private pickAdapterInstance<T>(cacheKey: string, value: T | T[]): T {
+    if (!Array.isArray(value)) return value;
+    if (value.length === 0) {
+      throw new Error(`No adapter instances configured for ${cacheKey}`);
+    }
+    const index = this.nextRoundRobinIndex(cacheKey, value.length);
+    return value[index]!;
+  }
+
+  private resolveRuntimeStage(): string {
+    const raw = String(
+      process.env.CORE_ADAPTER_STAGE ||
+        process.env.CORE_RUNTIME_STAGE ||
+        process.env.IDP_STAGE ||
+        process.env.NODE_ENV ||
+        'dev',
+    )
+      .trim()
+      .toLowerCase();
+    if (!raw) return 'dev';
+    if (raw === 'development') return 'dev';
+    if (raw === 'production') return 'publish';
+    if (raw === 'staging' || raw === 'stage') return 'prerelease';
+    return raw;
+  }
+
+  private stageCandidates(): string[] {
+    const aliases: Record<string, string[]> = {
+      dev: ['dev', 'development', 'local'],
+      test: ['test', 'qa'],
+      prerelease: ['prerelease', 'pre-release', 'staging', 'stage', 'uat'],
+      publish: ['publish', 'production', 'prod'],
+    };
+    const runtime = this.runtimeStage.toLowerCase();
+    const resolvedCanonical =
+      Object.keys(aliases).find(
+        (key) =>
+          key === runtime || aliases[key].some((alias) => alias.toLowerCase() === runtime),
+      ) || runtime;
+    const candidates = [resolvedCanonical, ...(aliases[resolvedCanonical] || []), runtime];
+    return Array.from(new Set(candidates.map((item) => item.toLowerCase())));
+  }
+
+  private asObject(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return value as Record<string, unknown>;
+  }
+
+  private getObjectValue(object: Record<string, unknown>, key: string): unknown {
+    if (key in object) return object[key];
+    const match = Object.keys(object).find((entry) => entry.toLowerCase() === key.toLowerCase());
+    return match ? object[match] : undefined;
+  }
+
+  private getObjectString(object: Record<string, unknown>, key: string): string | null {
+    const value = this.getObjectValue(object, key);
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+
+  private parseJsonIfPossible(value: string): unknown {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+
+  private resolveSecretRefFromAdapterConfig(
+    tenant: Tenant,
+    adapter: string,
+    key: string,
+    mode: 'read' | 'write',
+  ): string | string[] | null {
+    const root = this.asObject((tenant.adapterConfig as any)?.adapters ?? tenant.adapterConfig);
+    const adapterBlock = this.getObjectValue(root, adapter);
+    if (!adapterBlock || typeof adapterBlock !== 'object' || Array.isArray(adapterBlock)) {
+      return null;
+    }
+    const adapterEntries = adapterBlock as Record<string, unknown>;
+    const entry = this.getObjectValue(adapterEntries, key);
+    if (entry === undefined) return null;
+    return this.resolveSecretRefNode(entry, mode, this.stageCandidates(), 0);
+  }
+
+  private resolveFromStageContainer(
+    value: unknown,
+    mode: 'read' | 'write',
+    stageCandidates: string[],
+    depth: number,
+  ): string | string[] | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const entries = value as Record<string, unknown>;
+    for (const stageName of stageCandidates) {
+      const stageNode = this.getObjectValue(entries, stageName);
+      if (stageNode === undefined) continue;
+      const resolved = this.resolveSecretRefNode(stageNode, mode, stageCandidates, depth + 1);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  private resolveSecretRefNode(
+    value: unknown,
+    mode: 'read' | 'write',
+    stageCandidates: string[],
+    depth: number,
+  ): string | string[] | null {
+    if (depth > 12) return null;
+    if (Array.isArray(value)) {
+      const refs: string[] = [];
+      value.forEach((entry) => {
+        const resolved = this.resolveSecretRefNode(entry, mode, stageCandidates, depth + 1);
+        if (typeof resolved === 'string') {
+          refs.push(resolved);
+        } else if (Array.isArray(resolved)) {
+          refs.push(...resolved);
+        }
+      });
+      const uniqueRefs = Array.from(new Set(refs.filter(Boolean)));
+      return uniqueRefs.length ? uniqueRefs : null;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      return trimmed || null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const node = value as Record<string, unknown>;
+
+    const modeRefKeys =
+      mode === 'read'
+        ? ['readSecretRef', 'read_secret_ref', 'readRef', 'read_ref']
+        : ['writeSecretRef', 'write_secret_ref', 'writeRef', 'write_ref'];
+    for (const refKey of modeRefKeys) {
+      const resolved = this.getObjectString(node, refKey);
+      if (resolved) return resolved;
+    }
+
+    const genericRefKeys = ['secretRef', 'secret_ref', 'secretKey', 'secret_key', 'ref', 'key'];
+    for (const refKey of genericRefKeys) {
+      const resolved = this.getObjectString(node, refKey);
+      if (resolved) return resolved;
+    }
+
+    const modeNode = this.getObjectValue(node, mode);
+    if (modeNode !== undefined) {
+      const resolved = this.resolveSecretRefNode(modeNode, mode, stageCandidates, depth + 1);
+      if (resolved) return resolved;
+    }
+
+    const stageContainerKeys = ['stages', 'byStage', 'by_stage', 'environments', 'envs'];
+    for (const containerKey of stageContainerKeys) {
+      const resolved = this.resolveFromStageContainer(
+        this.getObjectValue(node, containerKey),
+        mode,
+        stageCandidates,
+        depth,
+      );
+      if (resolved) return resolved;
+    }
+
+    const hasInlineStageKey = stageCandidates.some(
+      (stage) => this.getObjectValue(node, stage) !== undefined,
+    );
+    if (hasInlineStageKey) {
+      const resolved = this.resolveFromStageContainer(node, mode, stageCandidates, depth);
+      if (resolved) return resolved;
+    }
+
+    const fallbackKeys = ['default', 'fallback'];
+    for (const fallbackKey of fallbackKeys) {
+      const fallbackNode = this.getObjectValue(node, fallbackKey);
+      if (fallbackNode === undefined) continue;
+      const resolved = this.resolveSecretRefNode(fallbackNode, mode, stageCandidates, depth + 1);
+      if (resolved) return resolved;
+    }
+
+    return null;
+  }
+
   private async getSecretValue(tenant: Tenant, keyName: string): Promise<string> {
     const repo = this.dataSource.getRepository(Secret);
     let secret = await repo.findOne({ where: { tenant: { id: tenant.id }, keyName } });
@@ -281,16 +474,72 @@ export class AdapterFactory {
     }
   }
 
-  private async resolveSecretValue(tenant: Tenant, adapter: string, key: string): Promise<string> {
+  private async resolveSecretValue(
+    tenant: Tenant,
+    adapter: string,
+    key: string,
+    mode: 'read' | 'write' = 'write',
+  ): Promise<string> {
     const rawKey = key.trim();
     const lowerKey = rawKey.toLowerCase();
+    const configuredSecretRef = this.resolveSecretRefFromAdapterConfig(
+      tenant,
+      adapter,
+      lowerKey,
+      mode,
+    );
+    if (configuredSecretRef) {
+      if (Array.isArray(configuredSecretRef)) {
+        const resolvedValues: unknown[] = [];
+        for (const ref of configuredSecretRef) {
+          try {
+            const raw = await this.getSecretValue(tenant, ref);
+            resolvedValues.push(this.parseJsonIfPossible(raw));
+          } catch (err) {
+            if (err instanceof Error && err.message.includes('failed to decrypt')) {
+              throw err;
+            }
+            throw new Error(
+              `Secret ${ref} referenced by adapter ${adapter}:${rawKey} not found for tenant ${tenant.id}`,
+            );
+          }
+        }
+        return JSON.stringify(resolvedValues);
+      }
+      try {
+        return await this.getSecretValue(tenant, configuredSecretRef);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('failed to decrypt')) {
+          throw err;
+        }
+        throw new Error(
+          `Secret ${configuredSecretRef} referenced by adapter ${adapter}:${rawKey} not found for tenant ${tenant.id}`,
+        );
+      }
+    }
+    const stage = this.runtimeStage.toLowerCase();
     const candidates = [
+      `adapter:${adapter}:${lowerKey}:${stage}:${mode}`,
+      `adapter:${adapter}:${rawKey}:${stage}:${mode}`,
+      `adapter:${adapter}:${lowerKey}:${stage}:${mode}:1`,
+      `adapter:${adapter}:${rawKey}:${stage}:${mode}:1`,
+      `adapter:${adapter}:${lowerKey}:${stage}`,
+      `adapter:${adapter}:${rawKey}:${stage}`,
+      `adapter:${adapter}:${lowerKey}:default:${mode}`,
+      `adapter:${adapter}:${rawKey}:default:${mode}`,
+      `adapter:${adapter}:${lowerKey}:default:${mode}:1`,
+      `adapter:${adapter}:${rawKey}:default:${mode}:1`,
+      `adapter:${adapter}:${lowerKey}:default`,
+      `adapter:${adapter}:${rawKey}:default`,
+      `adapter:${adapter}:${lowerKey}`,
+      `adapter:${adapter}:${rawKey}`,
       `${adapter}:${lowerKey}`,
       `${adapter}:${rawKey}`,
       lowerKey,
       rawKey,
     ];
-    for (const candidate of candidates) {
+    const uniqueCandidates = Array.from(new Set(candidates.filter(Boolean)));
+    for (const candidate of uniqueCandidates) {
       try {
         return await this.getSecretValue(tenant, candidate);
       } catch (err) {
@@ -326,7 +575,7 @@ export class AdapterFactory {
       // ignore debug failures
     }
     throw new Error(
-      `Secret ${rawKey} not found for tenant ${tenant.id}. Tried keys: ${candidates.join(', ')}${debugInfo}`
+      `Secret ${rawKey} not found for tenant ${tenant.id}. Tried keys: ${uniqueCandidates.join(', ')}${debugInfo}`
     );
   }
 
@@ -338,9 +587,6 @@ export class AdapterFactory {
         const readVal = (parsed as any).read;
         const writeVal = (parsed as any).write;
         const selected = mode === 'read' ? (readVal ?? writeVal) : (writeVal ?? readVal);
-        if (Array.isArray(selected)) {
-          return this.decryptPasswordMarkers(selected[0] ?? secretVal);
-        }
         return this.decryptPasswordMarkers(selected ?? secretVal);
       }
       return this.decryptPasswordMarkers(parsed);
@@ -441,8 +687,13 @@ export class AdapterFactory {
       .map((model) => `${model.id}:${model.updatedAt?.getTime?.() ?? ''}`)
       .join('|');
 
-    const secretVal = await this.resolveSecretValue(tenant, adapter, key);
-    const config = this.selectReadWriteConfig(secretVal, mode);
+    const secretVal = await this.resolveSecretValue(tenant, adapter, key, mode);
+    const selectedConfig = this.selectReadWriteConfig(secretVal, mode);
+    // ORM adapter keeps one initialized datasource; for array-based read replicas use the first entry.
+    const config = Array.isArray(selectedConfig) ? selectedConfig[0] : selectedConfig;
+    if (config === undefined || config === null) {
+      throw new Error(`No ${mode} configuration found for ORM adapter ${adapter}:${key}`);
+    }
     const configKey = typeof config === 'string' ? config : JSON.stringify(config ?? {});
 
     const cacheKey = `${tenant.id}:orm:${adapter}:${key}:${mode}`;
@@ -531,19 +782,35 @@ export class AdapterFactory {
     const normalizedKey = adapterKey.trim().toLowerCase();
     const cacheKey = `${tenant.id}:pg:${normalizedKey}:${mode}`;
     if (!this.pgPools.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 'postgres', normalizedKey);
+      const secretVal = await this.resolveSecretValue(tenant, 'postgres', normalizedKey, mode);
       const config = this.selectReadWriteConfig(secretVal, mode);
-      if (typeof config === 'string') {
+      if (config === undefined || config === null) {
+        throw new Error(`No ${mode} postgres configuration found for ${normalizedKey}`);
+      }
+      if (Array.isArray(config)) {
+        const pools = config
+          .filter((entry) => entry !== undefined && entry !== null)
+          .map((entry) =>
+            typeof entry === 'string'
+              ? new PgPool({ connectionString: entry })
+              : new PgPool(this.normalizeDbConfig(entry as Record<string, unknown>)),
+          );
+        if (!pools.length) {
+          throw new Error(`No ${mode} postgres connection entries found for ${normalizedKey}`);
+        }
+        this.pgPools.set(cacheKey, pools.length === 1 ? pools[0] : pools);
+      } else if (typeof config === 'string') {
         this.pgPools.set(cacheKey, new PgPool({ connectionString: config }));
       } else {
         this.pgPools.set(cacheKey, new PgPool(this.normalizeDbConfig(config as Record<string, unknown>)));
       }
     }
-    const pool = this.pgPools.get(cacheKey)!;
+    const poolSource = this.pgPools.get(cacheKey)!;
     const breaker = this.breakerFor(cacheKey);
     return {
       query: async (sql: string, params?: unknown[]) =>
         breaker.fire(async () => {
+          const pool = this.pickAdapterInstance(cacheKey, poolSource);
           const client = await pool.connect();
           try {
             const result = await client.query(sql, params as unknown[] | undefined);
@@ -564,9 +831,24 @@ export class AdapterFactory {
     const normalizedKey = adapterKey.trim().toLowerCase();
     const cacheKey = `${tenant.id}:mysql:${normalizedKey}:${mode}`;
     if (!this.mysqlPools.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 'mysql', normalizedKey);
+      const secretVal = await this.resolveSecretValue(tenant, 'mysql', normalizedKey, mode);
       const config = this.selectReadWriteConfig(secretVal, mode);
-      if (typeof config === 'string') {
+      if (config === undefined || config === null) {
+        throw new Error(`No ${mode} mysql configuration found for ${normalizedKey}`);
+      }
+      if (Array.isArray(config)) {
+        const pools = config
+          .filter((entry) => entry !== undefined && entry !== null)
+          .map((entry) =>
+            typeof entry === 'string'
+              ? createMySqlPool({ uri: entry })
+              : createMySqlPool(this.normalizeDbConfig(entry as Record<string, unknown>)),
+          );
+        if (!pools.length) {
+          throw new Error(`No ${mode} mysql connection entries found for ${normalizedKey}`);
+        }
+        this.mysqlPools.set(cacheKey, pools.length === 1 ? pools[0] : pools);
+      } else if (typeof config === 'string') {
         this.mysqlPools.set(cacheKey, createMySqlPool({ uri: config }));
       } else {
         this.mysqlPools.set(
@@ -575,11 +857,12 @@ export class AdapterFactory {
         );
       }
     }
-    const pool = this.mysqlPools.get(cacheKey)!;
+    const poolSource = this.mysqlPools.get(cacheKey)!;
     const breaker = this.breakerFor(cacheKey);
     return {
       query: async (sql: string, params?: unknown[]) =>
         breaker.fire(async () => {
+          const pool = this.pickAdapterInstance(cacheKey, poolSource);
           const [rows] = await pool.query(sql, params as unknown[] | undefined);
           return Array.isArray(rows) ? rows : [];
         }),
@@ -595,22 +878,43 @@ export class AdapterFactory {
     const normalizedKey = adapterKey.trim().toLowerCase();
     const cacheKey = `${tenant.id}:mssql:${normalizedKey}:${mode}`;
     if (!this.mssqlPools.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 'mssql', normalizedKey);
+      const secretVal = await this.resolveSecretValue(tenant, 'mssql', normalizedKey, mode);
       const config = this.selectReadWriteConfig(secretVal, mode);
-      const pool =
-        typeof config === 'string'
-          ? new ConnectionPool(config)
-          : new ConnectionPool(
-              this.normalizeDbConfig(config as Record<string, unknown>) as unknown as MssqlConfig
-            );
-      await pool.connect();
-      this.mssqlPools.set(cacheKey, pool);
+      if (config === undefined || config === null) {
+        throw new Error(`No ${mode} mssql configuration found for ${normalizedKey}`);
+      }
+      if (Array.isArray(config)) {
+        const pools = config
+          .filter((entry) => entry !== undefined && entry !== null)
+          .map((entry) =>
+            typeof entry === 'string'
+              ? new ConnectionPool(entry)
+              : new ConnectionPool(
+                  this.normalizeDbConfig(entry as Record<string, unknown>) as unknown as MssqlConfig,
+                ),
+          );
+        if (!pools.length) {
+          throw new Error(`No ${mode} mssql connection entries found for ${normalizedKey}`);
+        }
+        await Promise.all(pools.map((pool) => pool.connect()));
+        this.mssqlPools.set(cacheKey, pools.length === 1 ? pools[0] : pools);
+      } else {
+        const pool =
+          typeof config === 'string'
+            ? new ConnectionPool(config)
+            : new ConnectionPool(
+                this.normalizeDbConfig(config as Record<string, unknown>) as unknown as MssqlConfig
+              );
+        await pool.connect();
+        this.mssqlPools.set(cacheKey, pool);
+      }
     }
-    const pool = this.mssqlPools.get(cacheKey)!;
+    const poolSource = this.mssqlPools.get(cacheKey)!;
     const breaker = this.breakerFor(cacheKey);
     return {
       query: async (sql: string) =>
         breaker.fire(async () => {
+          const pool = this.pickAdapterInstance(cacheKey, poolSource);
           const result = await pool.request().query(sql);
           return result.recordset;
         }),
@@ -621,7 +925,7 @@ export class AdapterFactory {
     this.ensureAdapterAccess(tenant, 'redis', envKey);
     const cacheKey = `${tenant.id}:redis:${envKey}`;
     if (!this.redisClients.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 'redis', envKey);
+      const secretVal = await this.resolveSecretValue(tenant, 'redis', envKey, 'write');
       let config: string | Record<string, unknown> = secretVal;
       try {
         const parsed = JSON.parse(secretVal);
@@ -655,7 +959,7 @@ export class AdapterFactory {
     this.ensureAdapterAccess(tenant, 'kafka', envKey);
     const cacheKey = `${tenant.id}:kafka:${envKey}`;
     if (!this.kafkaProducers.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 'kafka', envKey);
+      const secretVal = await this.resolveSecretValue(tenant, 'kafka', envKey, 'write');
       let brokers: string[] = [];
       try {
         const parsed = JSON.parse(secretVal);
@@ -685,7 +989,7 @@ export class AdapterFactory {
     this.ensureAdapterAccess(tenant, 's3', envKey);
     const cacheKey = `${tenant.id}:s3:${envKey}`;
     if (!this.s3Clients.has(cacheKey)) {
-      const secretVal = await this.resolveSecretValue(tenant, 's3', envKey);
+      const secretVal = await this.resolveSecretValue(tenant, 's3', envKey, 'write');
       let cfg: {
         endpoint?: string;
         region?: string;
