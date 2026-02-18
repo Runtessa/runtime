@@ -8,6 +8,7 @@ import { SandboxRunner, SandboxRequestContext } from '../../engine/SandboxRunner
 import { GlobalModuleEndpoint, GlobalModulePackage, HttpMethod, ModuleEntity, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
+import { findMatchingModule, matchPath, publishedModulesCacheKey } from './dispatcherPath';
 
 type ModuleLike = {
   routePath: string;
@@ -53,7 +54,7 @@ export class Dispatcher {
           order: { routePath: 'ASC' },
         });
       } else {
-        const cacheKey = this.publishedModulesCacheKey(req.tenant.id, normalizedMethod as HttpMethod);
+        const cacheKey = publishedModulesCacheKey(req.tenant.id, normalizedMethod as HttpMethod);
         const cached = await publishedCache.get<ModuleLike[]>(cacheKey);
         if (cached) {
           modules = cached;
@@ -79,14 +80,10 @@ export class Dispatcher {
         }
       }
 
-      const matchResult = this.findMatchingModule(modules, req.path);
+      const matchResult = findMatchingModule(modules, req.path);
       const sharedMatch = matchResult
         ? null
-        : await this.findMatchingSharedEndpoint(
-            normalizedMethod as HttpMethod,
-            req.path,
-            isDev
-          );
+        : await this.findMatchingSharedEndpoint(normalizedMethod as HttpMethod, req.path, isDev);
       if (!matchResult && !sharedMatch) {
         return res.status(404).json({ error: 'Module not found' });
       }
@@ -99,7 +96,7 @@ export class Dispatcher {
             code: '',
           } as ModuleLike);
       const params =
-        matchResult?.params ?? this.matchPath(module.routePath, req.path) ?? {};
+        matchResult?.params ?? matchPath(module.routePath, req.path) ?? {};
 
       let endpointConfig = this.resolveEndpointConfig(
         req.tenant as Tenant,
@@ -203,7 +200,7 @@ export class Dispatcher {
     for (const endpoint of endpoints) {
       const pkg = endpoint.package as GlobalModulePackage | undefined;
       if (!pkg) continue;
-      const match = this.matchPath(endpoint.routePath, path);
+      const match = matchPath(endpoint.routePath, path);
       if (!match) continue;
       if (!allowDraft) {
         if (!pkg.publishedCodeBlob || !pkg.publishedVersion) {
@@ -269,44 +266,6 @@ export class Dispatcher {
     } catch (error) {
       throw new AppError(`Shared module error: ${(error as Error).message}`, 500);
     }
-  }
-
-  private findMatchingModule(
-    modules: ModuleLike[],
-    path: string,
-  ): { module: ModuleLike; params: Record<string, string> } | null {
-    for (const mod of modules) {
-      const params = this.matchPath(mod.routePath, path);
-      if (params) {
-        return { module: mod, params };
-      }
-    }
-    return null;
-  }
-
-  private matchPath(pattern: string, actual: string): Record<string, string> | null {
-    const patternParts = pattern.split('/').filter(Boolean);
-    const actualParts = actual.split('/').filter(Boolean);
-
-    if (patternParts.length !== actualParts.length) {
-      return null;
-    }
-
-    const params: Record<string, string> = {};
-    for (let i = 0; i < patternParts.length; i += 1) {
-      const pp = patternParts[i];
-      const ap = actualParts[i];
-      if (pp.startsWith(':')) {
-        params[pp.substring(1)] = decodeURIComponent(ap);
-      } else if (pp !== ap) {
-        return null;
-      }
-    }
-    return params;
-  }
-
-  private publishedModulesCacheKey(tenantId: string, method: HttpMethod) {
-    return `module:published:${tenantId}:${method}`;
   }
 
   private resolveEndpointConfig(
