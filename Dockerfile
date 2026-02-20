@@ -15,6 +15,7 @@ WORKDIR /app/src/core
 
 # Build this image from repository root:
 # docker build -f src/core/Dockerfile .
+COPY tsconfig.json /app/tsconfig.json
 COPY src/packages/shared /app/src/packages/shared
 COPY src/core/package.json src/core/package-lock.json ./
 RUN npm ci
