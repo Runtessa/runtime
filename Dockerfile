@@ -1,13 +1,15 @@
 FROM node:20-bullseye-slim AS kernel-builder
 
 WORKDIR /app/src/kernel
+ARG USE_PREBUILT=false
 
 # Build kernel assets into /app/src/public
 COPY src/kernel/package.json src/kernel/package-lock.json ./
 RUN npm ci
 
 COPY src/kernel /app/src/kernel
-RUN npm run build
+COPY src/public /app/src/public
+RUN if [ "$USE_PREBUILT" != "true" ]; then npm run build; fi
 
 FROM node:20-bullseye-slim AS runner
 
