@@ -21,6 +21,8 @@ COPY tsconfig.json /app/tsconfig.json
 COPY src/packages/shared /app/src/packages/shared
 COPY src/core/package.json src/core/package-lock.json ./
 RUN npm ci
+RUN mkdir -p /app/src \
+    && ln -s /app/src/core/node_modules /app/src/node_modules
 
 COPY src/core /app/src/core
 COPY --from=kernel-builder /app/src/public /app/src/public
