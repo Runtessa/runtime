@@ -13,6 +13,8 @@ import { GlobalModulePackage } from '@idp/shared';
 import { GlobalModulePackageFile } from '@idp/shared';
 import { GlobalUIPackage } from '@idp/shared';
 import { GlobalUIPackageFile } from '@idp/shared';
+import { PublishRequest } from '@idp/shared';
+import { User } from '@idp/shared';
 
 const connectionOptions: DataSourceOptions = {
   type: 'postgres',
@@ -27,6 +29,7 @@ const connectionOptions: DataSourceOptions = {
   entities: [
     Tenant,
     Account,
+    User,
     Secret,
     ModuleEntity,
     UIPackage,
@@ -38,6 +41,7 @@ const connectionOptions: DataSourceOptions = {
     ModuleRevision,
     UIPackageRevision,
     OrmModel,
+    PublishRequest,
   ],
   subscribers: [],
   migrations: [],
