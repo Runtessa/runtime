@@ -4,7 +4,7 @@ import { AppDataSource, initializeDataSource } from './core/datasource';
 import { CryptoService } from './core/security/CryptoService';
 import { Tenant } from '@idp/shared';
 import { Secret } from '@idp/shared';
-import { ModuleEntity, HttpMethod } from '@idp/shared';
+import { ModuleEntity, HttpMethod, SourceCode } from '@idp/shared';
 
 const getKeyFromEnv = (envName: string, expectedBytes: number): Buffer => {
   const raw = process.env[envName];
@@ -56,6 +56,7 @@ const seedTenant = async (seed: (typeof seedTenants)[number]) => {
   const tenantRepo = AppDataSource.getRepository(Tenant);
   const secretRepo = AppDataSource.getRepository(Secret);
   const moduleRepo = AppDataSource.getRepository(ModuleEntity);
+  const sourceRepo = AppDataSource.getRepository(SourceCode);
 
   let tenant = await tenantRepo.findOne({ where: { hostname: seed.hostname } });
   if (!tenant) {
@@ -105,10 +106,13 @@ const seedTenant = async (seed: (typeof seedTenants)[number]) => {
     };
   `;
   if (!sampleModule) {
+    const sourceCode = sourceRepo.create({ code: helloCode });
+    await sourceRepo.save(sourceCode);
+
     const mod = moduleRepo.create({
       routePath: '/hello',
       method: HttpMethod.GET,
-      code: helloCode,
+      sourceCode,
       tenant,
     });
     await moduleRepo.save(mod);

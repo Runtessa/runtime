@@ -15,6 +15,8 @@ import { GlobalUIPackage } from '@idp/shared';
 import { GlobalUIPackageFile } from '@idp/shared';
 import { PublishRequest } from '@idp/shared';
 import { User } from '@idp/shared';
+import { SourceCode } from '@idp/shared';
+import { CompiledCode } from '@idp/shared';
 
 const connectionOptions: DataSourceOptions = {
   type: 'postgres',
@@ -40,6 +42,8 @@ const connectionOptions: DataSourceOptions = {
     GlobalUIPackageFile,
     ModuleRevision,
     UIPackageRevision,
+    SourceCode,
+    CompiledCode,
     OrmModel,
     PublishRequest,
   ],

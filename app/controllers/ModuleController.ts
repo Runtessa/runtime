@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { generateVersion } from '../../common/version';
 import { publishedCache } from '../../core/publishedCache';
-import { HttpMethod, ModuleEntity, ModuleRevision, Tenant } from '@idp/shared';
+import { HttpMethod, ModuleEntity, ModuleRevision, SourceCode, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
 export class ModuleController {
@@ -15,9 +15,10 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const modules = await repo.find({
         where: { tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'publishedSourceCode'],
         order: { routePath: 'ASC', method: 'ASC' },
       });
-      return res.json(modules.map(this.serialize));
+      return res.json(modules.map((mod) => this.serialize(mod)));
     } catch (error) {
       next(error);
     }
@@ -29,6 +30,7 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const mod = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'publishedSourceCode'],
       });
       if (!mod) {
         return res.status(404).json({ error: 'Module not found' });
@@ -49,6 +51,8 @@ export class ModuleController {
       const fileExtension = this.normalizeFileExtension(req.body?.fileExtension);
 
       const repo = this.dataSource.getRepository(ModuleEntity);
+      const sourceRepo = this.dataSource.getRepository(SourceCode);
+
       const existing = await repo.findOne({
         where: {
           tenant: { id: req.tenant!.id },
@@ -60,10 +64,13 @@ export class ModuleController {
         return res.status(409).json({ error: 'Module already exists for route/method' });
       }
 
+      const sourceCode = sourceRepo.create({ code: codeBody });
+      await sourceRepo.save(sourceCode);
+
       const mod = repo.create({
         routePath: normalizedRoute,
         method: normalizedMethod,
-        code: codeBody,
+        sourceCode,
         fileExtension,
         draftVersion: generateVersion(),
         tenant: req.tenant!,
@@ -82,6 +89,7 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const mod = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'publishedSourceCode'],
       });
       if (!mod) {
         return res.status(404).json({ error: 'Module not found' });
@@ -89,7 +97,10 @@ export class ModuleController {
 
       const nextRoute = req.body?.routePath ? this.normalizeRoute(req.body.routePath) : mod.routePath;
       const nextMethod = req.body?.method ? this.normalizeMethod(req.body.method) : mod.method;
-      const nextCode = req.body?.code !== undefined ? this.normalizeCode(req.body.code) : mod.code;
+      const nextCode =
+        req.body?.code !== undefined
+          ? this.normalizeCode(req.body.code)
+          : this.requireModuleSourceCode(mod);
       const nextExt =
         req.body?.fileExtension !== undefined
           ? this.normalizeFileExtension(req.body.fileExtension)
@@ -110,13 +121,19 @@ export class ModuleController {
 
       await this.createRevision(req, mod, 'update');
 
-    mod.routePath = nextRoute;
-    mod.method = nextMethod;
-    mod.code = nextCode;
-    mod.fileExtension = nextExt;
-    mod.draftVersion = generateVersion();
-    await repo.save(mod);
-    await this.ensureAclEndpoint(req.tenant as Tenant, nextRoute);
+      if (nextCode !== this.requireModuleSourceCode(mod)) {
+        const sourceRepo = this.dataSource.getRepository(SourceCode);
+        const sourceCode = sourceRepo.create({ code: nextCode });
+        await sourceRepo.save(sourceCode);
+        mod.sourceCode = sourceCode;
+      }
+
+      mod.routePath = nextRoute;
+      mod.method = nextMethod;
+      mod.fileExtension = nextExt;
+      mod.draftVersion = generateVersion();
+      await repo.save(mod);
+      await this.ensureAclEndpoint(req.tenant as Tenant, nextRoute);
 
       return res.json(this.serialize(mod));
     } catch (error) {
@@ -130,6 +147,7 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const mod = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'publishedSourceCode'],
       });
       if (!mod) {
         return res.status(404).json({ error: 'Module not found' });
@@ -157,9 +175,10 @@ export class ModuleController {
       const revRepo = this.dataSource.getRepository(ModuleRevision);
       const revisions = await revRepo.find({
         where: { module: { id: mod.id } },
+        relations: ['sourceCode'],
         order: { revision: 'DESC', createdAt: 'DESC' },
       });
-      return res.json(revisions.map(this.serializeRevision));
+      return res.json(revisions.map((rev) => this.serializeRevision(rev)));
     } catch (error) {
       next(error);
     }
@@ -171,6 +190,7 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const mod = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode'],
       });
       if (!mod) {
         return res.status(404).json({ error: 'Module not found' });
@@ -179,6 +199,7 @@ export class ModuleController {
       const revRepo = this.dataSource.getRepository(ModuleRevision);
       const revision = await revRepo.findOne({
         where: { id: req.params.revisionId, module: { id: mod.id } },
+        relations: ['sourceCode'],
       });
       if (!revision) {
         return res.status(404).json({ error: 'Revision not found' });
@@ -201,7 +222,7 @@ export class ModuleController {
 
       mod.routePath = revision.routePath;
       mod.method = revision.method;
-      mod.code = revision.code;
+      mod.sourceCode = this.requireRevisionSourceCodeEntity(revision);
       mod.fileExtension = revision.fileExtension;
       mod.draftVersion = generateVersion();
       await repo.save(mod);
@@ -218,6 +239,7 @@ export class ModuleController {
       const repo = this.dataSource.getRepository(ModuleEntity);
       const mod = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode'],
       });
       if (!mod) {
         return res.status(404).json({ error: 'Module not found' });
@@ -229,7 +251,7 @@ export class ModuleController {
       mod.publishedVersion = generateVersion();
       mod.publishedRoutePath = mod.routePath;
       mod.publishedMethod = mod.method;
-      mod.publishedCode = mod.code;
+      mod.publishedSourceCode = mod.sourceCode;
       mod.publishedFileExtension = mod.fileExtension;
       mod.publishedAt = new Date();
       await repo.save(mod);
@@ -294,7 +316,7 @@ export class ModuleController {
       revision: (last?.revision ?? 0) + 1,
       routePath: mod.routePath,
       method: mod.method,
-      code: mod.code,
+      sourceCode: this.requireModuleSourceCodeEntity(mod),
       fileExtension: mod.fileExtension,
       action,
       createdBy: req.account?.id ?? null,
@@ -334,7 +356,7 @@ export class ModuleController {
       id: mod.id,
       routePath: mod.routePath,
       method: mod.method,
-      code: mod.code,
+      code: this.requireModuleSourceCode(mod),
       fileExtension: mod.fileExtension,
       draftVersion: mod.draftVersion,
       publishedVersion: mod.publishedVersion ?? undefined,
@@ -350,11 +372,35 @@ export class ModuleController {
       revision: rev.revision,
       routePath: rev.routePath,
       method: rev.method,
-      code: rev.code,
+      code: this.requireRevisionSourceCode(rev),
       fileExtension: rev.fileExtension,
       action: rev.action,
       createdBy: rev.createdBy ?? undefined,
       createdAt: rev.createdAt,
     };
+  }
+
+  private requireModuleSourceCodeEntity(mod: ModuleEntity) {
+    if (!mod.sourceCode) {
+      throw new AppError(`Module ${mod.id} is missing source code`, 500);
+    }
+    return mod.sourceCode;
+  }
+
+  private requireModuleSourceCode(mod: ModuleEntity) {
+    const sourceCode = this.requireModuleSourceCodeEntity(mod);
+    return sourceCode.code;
+  }
+
+  private requireRevisionSourceCode(rev: ModuleRevision) {
+    const sourceCode = this.requireRevisionSourceCodeEntity(rev);
+    return sourceCode.code;
+  }
+
+  private requireRevisionSourceCodeEntity(rev: ModuleRevision) {
+    if (!rev.sourceCode) {
+      throw new AppError(`Module revision ${rev.id} is missing source code`, 500);
+    }
+    return rev.sourceCode;
   }
 }

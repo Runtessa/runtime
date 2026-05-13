@@ -212,8 +212,12 @@ export const loadOrmEntitiesFromModels = (models: OrmModel[]) => {
   models.forEach((model) => {
     const normalized = ensureJsExtension(normalizePath(model.path));
     if (!normalized) return;
-    const rawSource = model.codeBlob || model.code || '';
-    const source = model.codeBlob ? rawSource : compileOrmSource(rawSource);
+    const compiledSource = model.compiledCode?.code;
+    const sourceCode = model.sourceCode?.code;
+    if (!compiledSource && !sourceCode) {
+      throw new Error(`ORM model ${normalized} is missing source and compiled code`);
+    }
+    const source = compiledSource ?? compileOrmSource(sourceCode!);
     moduleMap.set(normalized, source);
     const baseName = normalized.split('/').pop() || '';
     if (baseName && !moduleMap.has(baseName)) {

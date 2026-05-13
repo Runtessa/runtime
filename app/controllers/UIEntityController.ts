@@ -3,8 +3,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { generateVersion } from '../../common/version';
 import { publishedCache } from '../../core/publishedCache';
-import { UIPackage } from '@idp/shared';
-import { UIPackageRevision } from '@idp/shared';
+import { UIPackage, UIPackageRevision, SourceCode, CompiledCode } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
 export class UIEntityController {
@@ -17,8 +16,9 @@ export class UIEntityController {
       const packages = await repo.find({
         where: { tenant: { id: req.tenant!.id } },
         order: { name: 'ASC', version: 'DESC' },
+        relations: ['sourceCode', 'compiledCode'],
       });
-      return res.json(packages.map(this.serialize));
+      return res.json(packages.map((pkg) => this.serialize(pkg)));
     } catch (error) {
       next(error);
     }
@@ -30,6 +30,7 @@ export class UIEntityController {
       const repo = this.dataSource.getRepository(UIPackage);
       const pkg = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
       });
       if (!pkg) {
         return res.status(404).json({ error: 'UI entity not found' });
@@ -43,11 +44,11 @@ export class UIEntityController {
   create = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
       this.ensureTenant(req);
-      const { name, version, codeBlob, dependencies } = req.body ?? {};
+      const { name, version, code, codeBlob, dependencies } = req.body ?? {};
       const normalizedName = this.normalizeName(name);
       const normalizedVersion = this.normalizeVersion(version);
-      const normalizedCode = this.normalizeSourceCode(req.body?.code ?? codeBlob);
-      const compiledCode = this.normalizeCompiledCode(req.body?.codeBlob ?? codeBlob ?? normalizedCode);
+      const normalizedCode = this.normalizeSourceCode(code);
+      const compiledCode = this.normalizeCompiledCode(codeBlob);
       const normalizedDeps = this.normalizeDependencies(dependencies);
       const fileExtension = this.normalizeFileExtension(req.body?.fileExtension);
 
@@ -63,11 +64,18 @@ export class UIEntityController {
         return res.status(409).json({ error: 'UI entity already exists with this name/version' });
       }
 
+      const sourceCodeRepo = this.dataSource.getRepository(SourceCode);
+      const compiledCodeRepo = this.dataSource.getRepository(CompiledCode);
+      const sc = sourceCodeRepo.create({ code: normalizedCode });
+      const cc = compiledCodeRepo.create({ code: compiledCode });
+      await sourceCodeRepo.save(sc);
+      await compiledCodeRepo.save(cc);
+
       const pkg = repo.create({
         name: normalizedName,
         version: normalizedVersion,
-        code: normalizedCode,
-        codeBlob: compiledCode,
+        sourceCode: sc,
+        compiledCode: cc,
         dependencies: normalizedDeps,
         fileExtension,
         draftVersion: generateVersion(),
@@ -86,20 +94,21 @@ export class UIEntityController {
       const repo = this.dataSource.getRepository(UIPackage);
       const pkg = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'compiledCode'],
       });
       if (!pkg) {
         return res.status(404).json({ error: 'UI entity not found' });
       }
       const nextName = req.body?.name ? this.normalizeName(req.body.name) : pkg.name;
       const nextVersion = req.body?.version ? this.normalizeVersion(req.body.version) : pkg.version;
-      const nextSource =
+      const nextSourceCode =
         req.body?.code !== undefined
           ? this.normalizeSourceCode(req.body.code)
-          : pkg.code;
-      const nextCompiled =
+          : this.requireSourceCode(pkg);
+      const nextCompiledCode =
         req.body?.codeBlob !== undefined
           ? this.normalizeCompiledCode(req.body.codeBlob)
-          : pkg.codeBlob;
+          : this.requireCompiledCode(pkg);
       const nextDeps =
         req.body?.dependencies !== undefined
           ? this.normalizeDependencies(req.body.dependencies)
@@ -123,10 +132,17 @@ export class UIEntityController {
 
       await this.createRevision(req, pkg, 'update');
 
+      const sourceCodeRepo = this.dataSource.getRepository(SourceCode);
+      const compiledCodeRepo = this.dataSource.getRepository(CompiledCode);
+      const sc = sourceCodeRepo.create({ code: nextSourceCode });
+      const cc = compiledCodeRepo.create({ code: nextCompiledCode });
+      await sourceCodeRepo.save(sc);
+      await compiledCodeRepo.save(cc);
+
       pkg.name = nextName;
       pkg.version = nextVersion;
-      pkg.code = nextSource;
-      pkg.codeBlob = nextCompiled;
+      pkg.sourceCode = sc;
+      pkg.compiledCode = cc;
       pkg.dependencies = nextDeps;
       pkg.fileExtension = nextExt;
       pkg.draftVersion = generateVersion();
@@ -144,6 +160,7 @@ export class UIEntityController {
       const repo = this.dataSource.getRepository(UIPackage);
       const pkg = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'compiledCode'],
       });
       if (!pkg) {
         return res.status(404).json({ error: 'UI entity not found' });
@@ -171,8 +188,9 @@ export class UIEntityController {
       const revisions = await revRepo.find({
         where: { uiPackage: { id: pkg.id } },
         order: { revision: 'DESC', createdAt: 'DESC' },
+        relations: ['sourceCode', 'compiledCode'],
       });
-      return res.json(revisions.map(this.serializeRevision));
+      return res.json(revisions.map((rev) => this.serializeRevision(rev)));
     } catch (error) {
       next(error);
     }
@@ -184,6 +202,7 @@ export class UIEntityController {
       const repo = this.dataSource.getRepository(UIPackage);
       const pkg = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'compiledCode'],
       });
       if (!pkg) {
         return res.status(404).json({ error: 'UI entity not found' });
@@ -191,6 +210,7 @@ export class UIEntityController {
       const revRepo = this.dataSource.getRepository(UIPackageRevision);
       const revision = await revRepo.findOne({
         where: { id: req.params.revisionId, uiPackage: { id: pkg.id } },
+        relations: ['sourceCode', 'compiledCode'],
       });
       if (!revision) {
         return res.status(404).json({ error: 'Revision not found' });
@@ -213,8 +233,8 @@ export class UIEntityController {
 
       pkg.name = revision.name;
       pkg.version = revision.version;
-      pkg.code = revision.code;
-      pkg.codeBlob = revision.codeBlob;
+      pkg.sourceCode = revision.sourceCode;
+      pkg.compiledCode = revision.compiledCode;
       pkg.dependencies = revision.dependencies ?? [];
       pkg.fileExtension = revision.fileExtension;
       pkg.draftVersion = generateVersion();
@@ -232,14 +252,15 @@ export class UIEntityController {
       const repo = this.dataSource.getRepository(UIPackage);
       const pkg = await repo.findOne({
         where: { id: req.params.id, tenant: { id: req.tenant!.id } },
+        relations: ['sourceCode', 'compiledCode'],
       });
       if (!pkg) {
         return res.status(404).json({ error: 'UI entity not found' });
       }
 
       pkg.publishedVersion = generateVersion();
-      pkg.publishedCode = pkg.code;
-      pkg.publishedCodeBlob = pkg.codeBlob;
+      pkg.publishedSourceCode = pkg.sourceCode;
+      pkg.publishedCompiledCode = pkg.compiledCode;
       pkg.publishedDependencies = pkg.dependencies ?? [];
       pkg.publishedFileExtension = pkg.fileExtension;
       pkg.publishedAt = new Date();
@@ -309,17 +330,17 @@ export class UIEntityController {
       where: { uiPackage: { id: pkg.id } },
       order: { revision: 'DESC' },
     });
-    const revision = revRepo.create({
-      uiPackage: pkg,
-      tenant: req.tenant!,
-      revision: (last?.revision ?? 0) + 1,
-      name: pkg.name,
-      version: pkg.version,
-      code: pkg.code,
-      codeBlob: pkg.codeBlob,
-      dependencies: pkg.dependencies ?? [],
-      fileExtension: pkg.fileExtension,
-      action,
+      const revision = revRepo.create({
+        uiPackage: pkg,
+        tenant: req.tenant!,
+        revision: (last?.revision ?? 0) + 1,
+        name: pkg.name,
+        version: pkg.version,
+        sourceCode: this.requireSourceCodeEntity(pkg),
+        compiledCode: this.requireCompiledCodeEntity(pkg),
+        dependencies: pkg.dependencies ?? [],
+        fileExtension: pkg.fileExtension,
+        action,
       createdBy: req.account?.id ?? null,
     });
     await revRepo.save(revision);
@@ -339,8 +360,8 @@ export class UIEntityController {
       id: pkg.id,
       name: pkg.name,
       version: pkg.version,
-      code: pkg.code,
-      codeBlob: pkg.codeBlob,
+      code: this.requireSourceCode(pkg),
+      codeBlob: this.requireCompiledCode(pkg),
       dependencies: pkg.dependencies ?? [],
       fileExtension: pkg.fileExtension,
       draftVersion: pkg.draftVersion,
@@ -357,13 +378,49 @@ export class UIEntityController {
       revision: rev.revision,
       name: rev.name,
       version: rev.version,
-      code: rev.code,
-      codeBlob: rev.codeBlob,
+      code: this.requireRevisionSourceCode(rev),
+      codeBlob: this.requireRevisionCompiledCode(rev),
       dependencies: rev.dependencies ?? [],
       fileExtension: rev.fileExtension,
       action: rev.action,
       createdBy: rev.createdBy ?? undefined,
       createdAt: rev.createdAt,
     };
+  }
+
+  private requireSourceCodeEntity(pkg: UIPackage) {
+    if (!pkg.sourceCode) {
+      throw new AppError(`UI package ${pkg.id} is missing source code`, 500);
+    }
+    return pkg.sourceCode;
+  }
+
+  private requireSourceCode(pkg: UIPackage) {
+    return this.requireSourceCodeEntity(pkg).code;
+  }
+
+  private requireCompiledCodeEntity(pkg: UIPackage) {
+    if (!pkg.compiledCode) {
+      throw new AppError(`UI package ${pkg.id} is missing compiled code`, 500);
+    }
+    return pkg.compiledCode;
+  }
+
+  private requireCompiledCode(pkg: UIPackage) {
+    return this.requireCompiledCodeEntity(pkg).code;
+  }
+
+  private requireRevisionSourceCode(rev: UIPackageRevision) {
+    if (!rev.sourceCode) {
+      throw new AppError(`UI revision ${rev.id} is missing source code`, 500);
+    }
+    return rev.sourceCode.code;
+  }
+
+  private requireRevisionCompiledCode(rev: UIPackageRevision) {
+    if (!rev.compiledCode) {
+      throw new AppError(`UI revision ${rev.id} is missing compiled code`, 500);
+    }
+    return rev.compiledCode.code;
   }
 }

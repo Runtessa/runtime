@@ -1,6 +1,7 @@
 import { NextFunction, Response } from 'express';
 import { DataSource } from 'typeorm';
 import { isDeveloperAccess } from '../../common/devAccess';
+import { AppError } from '../../common/AppError';
 import { publishedCache } from '../../core/publishedCache';
 import { GlobalUIPackage } from '@idp/shared';
 import { UIPackage } from '@idp/shared';
@@ -29,6 +30,7 @@ export class RegistryController {
         if (!version || version === 'latest') {
           const latest = await pkgRepo.find({
             where: { tenant: { id: tenantId }, name },
+            relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
             order: { createdAt: 'DESC' },
             take: 1,
           });
@@ -36,6 +38,7 @@ export class RegistryController {
         }
         return pkgRepo.findOne({
           where: { tenant: { id: tenantId }, name, version },
+          relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
         });
       };
 
@@ -89,18 +92,23 @@ export class RegistryController {
         if (!version || version === 'latest') {
           const latest = await globalRepo.find({
             where: { name },
+            relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
             order: { createdAt: 'DESC' },
             take: 1,
           });
           return latest[0] ?? null;
         }
-        return globalRepo.findOne({ where: { name, version } });
+        return globalRepo.findOne({
+          where: { name, version },
+          relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
+        });
       };
 
       const findPackage = async (tenantId: string) => {
         if (!version || version === 'latest') {
           const latest = await pkgRepo.find({
             where: { tenant: { id: tenantId }, name },
+            relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
             order: { createdAt: 'DESC' },
             take: 1,
           });
@@ -108,6 +116,7 @@ export class RegistryController {
         }
         return pkgRepo.findOne({
           where: { tenant: { id: tenantId }, name, version },
+          relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
         });
       };
 
@@ -180,7 +189,7 @@ export class RegistryController {
   };
 
   private hasPublished(pkg: UIPackage | GlobalUIPackage) {
-    return Boolean(pkg.publishedCodeBlob) && Boolean(pkg.publishedVersion);
+    return Boolean(pkg.publishedCompiledCode?.code) && Boolean(pkg.publishedVersion);
   }
 
   private registryCacheKey(
@@ -201,7 +210,7 @@ export class RegistryController {
       name: pkg.name,
       version: pkg.draftVersion || pkg.version,
       packageVersion: pkg.version,
-      source: pkg.codeBlob,
+      source: this.requireCompiledCode(pkg),
       dependencies: pkg.dependencies ?? [],
       fileExtension: pkg.fileExtension,
     };
@@ -212,9 +221,23 @@ export class RegistryController {
       name: pkg.name,
       version: pkg.publishedVersion || pkg.version,
       packageVersion: pkg.version,
-      source: pkg.publishedCodeBlob || '',
+      source: this.requirePublishedCompiledCode(pkg),
       dependencies: pkg.publishedDependencies ?? [],
       fileExtension: pkg.publishedFileExtension ?? pkg.fileExtension,
     };
+  }
+
+  private requireCompiledCode(pkg: UIPackage | GlobalUIPackage) {
+    if (!pkg.compiledCode?.code) {
+      throw new AppError(`Package ${pkg.name}@${pkg.version} is missing compiled code`, 500);
+    }
+    return pkg.compiledCode.code;
+  }
+
+  private requirePublishedCompiledCode(pkg: UIPackage | GlobalUIPackage) {
+    if (!pkg.publishedCompiledCode?.code) {
+      throw new AppError(`Package ${pkg.name}@${pkg.version} is missing published code`, 500);
+    }
+    return pkg.publishedCompiledCode.code;
   }
 }

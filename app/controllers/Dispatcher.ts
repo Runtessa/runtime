@@ -49,10 +49,17 @@ export class Dispatcher {
       let modules: ModuleLike[] = [];
 
       if (isDev) {
-        modules = await moduleRepo.find({
+        const dbModules = await moduleRepo.find({
           where: { tenant: { id: req.tenant.id }, method: normalizedMethod as HttpMethod },
+          relations: ['sourceCode'],
           order: { routePath: 'ASC' },
         });
+        modules = dbModules.map((mod) => ({
+          routePath: mod.routePath,
+          method: mod.method,
+          code: this.requireModuleSourceCode(mod),
+          fileExtension: mod.fileExtension,
+        }));
       } else {
         const cacheKey = publishedModulesCacheKey(req.tenant.id, normalizedMethod as HttpMethod);
         const cached = await publishedCache.get<ModuleLike[]>(cacheKey);
@@ -61,19 +68,20 @@ export class Dispatcher {
         } else {
           const published = await moduleRepo.find({
             where: { tenant: { id: req.tenant.id } },
+            relations: ['publishedSourceCode'],
             order: { publishedRoutePath: 'ASC', routePath: 'ASC' },
           });
           modules = published
             .filter(
               (mod) =>
-                Boolean(mod.publishedCode) &&
+                Boolean(mod.publishedSourceCode) &&
                 Boolean(mod.publishedVersion) &&
                 (mod.publishedMethod ?? mod.method) === (normalizedMethod as HttpMethod)
             )
             .map((mod) => ({
               routePath: mod.publishedRoutePath ?? mod.routePath,
               method: (mod.publishedMethod ?? mod.method) as HttpMethod,
-              code: mod.publishedCode ?? '',
+              code: mod.publishedSourceCode!.code,
               fileExtension: mod.publishedFileExtension ?? mod.fileExtension,
             }));
           await publishedCache.set(cacheKey, modules);
@@ -184,6 +192,13 @@ export class Dispatcher {
     return normalized;
   }
 
+  private requireModuleSourceCode(mod: ModuleEntity) {
+    if (!mod.sourceCode?.code) {
+      throw new AppError(`Module ${mod.id} is missing source code`, 500);
+    }
+    return mod.sourceCode.code;
+  }
+
   private async findMatchingSharedEndpoint(
     method: HttpMethod,
     path: string,
@@ -193,7 +208,7 @@ export class Dispatcher {
     const repo = globalDataSource.getRepository(GlobalModuleEndpoint);
     const endpoints = await repo.find({
       where: { method },
-      relations: ['package'],
+      relations: ['package', 'package.compiledCode', 'package.publishedCompiledCode'],
       order: { routePath: 'ASC' },
     });
 
@@ -203,7 +218,7 @@ export class Dispatcher {
       const match = matchPath(endpoint.routePath, path);
       if (!match) continue;
       if (!allowDraft) {
-        if (!pkg.publishedCodeBlob || !pkg.publishedVersion) {
+        if (!pkg.publishedCompiledCode?.code || !pkg.publishedVersion) {
           return null;
         }
       }

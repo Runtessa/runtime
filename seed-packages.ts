@@ -1,8 +1,7 @@
 import 'dotenv/config';
 import 'reflect-metadata';
 import { AppDataSource, initializeDataSource } from './core/datasource';
-import { Tenant } from '@idp/shared';
-import { UIPackage } from '@idp/shared';
+import { Tenant, UIPackage, SourceCode, CompiledCode } from '@idp/shared';
 
 const themePackage = {
   name: '@core/theme',
@@ -51,6 +50,8 @@ const seedPackages = async () => {
   await initializeDataSource();
   const tenantRepo = AppDataSource.getRepository(Tenant);
   const pkgRepo = AppDataSource.getRepository(UIPackage);
+  const sourceRepo = AppDataSource.getRepository(SourceCode);
+  const compiledRepo = AppDataSource.getRepository(CompiledCode);
 
   const tenants = await tenantRepo.find();
   if (!tenants.length) {
@@ -59,7 +60,7 @@ const seedPackages = async () => {
 
   for (const tenant of tenants) {
     for (const pkg of packages) {
-      await upsertPackage(pkgRepo, tenant.id, pkg);
+      await upsertPackage(pkgRepo, sourceRepo, compiledRepo, tenant.id, pkg);
     }
   }
 
@@ -69,23 +70,38 @@ const seedPackages = async () => {
 
 const upsertPackage = async (
   repo: ReturnType<typeof AppDataSource.getRepository<UIPackage>>,
+  sourceRepo: ReturnType<typeof AppDataSource.getRepository<SourceCode>>,
+  compiledRepo: ReturnType<typeof AppDataSource.getRepository<CompiledCode>>,
   tenantId: string,
   pkg: { name: string; version: string; code: string; dependencies: string[] },
 ) => {
   let existing = await repo.findOne({
     where: { tenant: { id: tenantId }, name: pkg.name, version: pkg.version },
+    relations: ['sourceCode', 'compiledCode'],
   });
 
   if (!existing) {
+    const sc = sourceRepo.create({ code: pkg.code });
+    const cc = compiledRepo.create({ code: pkg.code });
+    await sourceRepo.save(sc);
+    await compiledRepo.save(cc);
+
     existing = repo.create({
       tenant: { id: tenantId } as Tenant,
       name: pkg.name,
       version: pkg.version,
-      codeBlob: pkg.code,
+      sourceCode: sc,
+      compiledCode: cc,
       dependencies: pkg.dependencies,
     });
   } else {
-    existing.codeBlob = pkg.code;
+    if (!existing.compiledCode) {
+      throw new Error(
+        `Seed package ${pkg.name}@${pkg.version} missing compiledCode relation for tenant ${tenantId}`,
+      );
+    }
+    existing.compiledCode.code = pkg.code;
+    await compiledRepo.save(existing.compiledCode);
     existing.dependencies = pkg.dependencies;
   }
 

@@ -17,6 +17,7 @@ export const loadOrmModels = async (dataSource: DataSource, tenant: Tenant) => {
   const repo = dataSource.getRepository(OrmModel);
   return repo.find({
     where: { tenant: { id: tenant.id } },
+    relations: ['sourceCode', 'compiledCode'],
     order: { path: 'ASC' },
   });
 };

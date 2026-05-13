@@ -23,12 +23,16 @@ export class SharedModuleLoader {
     if (versionToken === 'latest') {
       const latest = await repo.find({
         where: { name: normalizedName },
+        relations: ['compiledCode', 'publishedCompiledCode'],
         order: { createdAt: 'DESC' },
         take: 1,
       });
       pkg = latest[0] ?? null;
     } else {
-      pkg = await repo.findOne({ where: { name: normalizedName, version: versionToken } });
+      pkg = await repo.findOne({
+        where: { name: normalizedName, version: versionToken },
+        relations: ['compiledCode', 'publishedCompiledCode'],
+      });
     }
 
     if (!pkg) {
@@ -45,7 +49,7 @@ export class SharedModuleLoader {
       return this.cache.get(cacheKey);
     }
 
-    const source = allowDraft ? pkg.codeBlob : pkg.publishedCodeBlob;
+    const source = allowDraft ? pkg.compiledCode?.code : pkg.publishedCompiledCode?.code;
     if (!source) {
       if (allowDraft) {
         throw new Error(`Shared module ${normalizedName}@${versionToken} has no draft code`);
