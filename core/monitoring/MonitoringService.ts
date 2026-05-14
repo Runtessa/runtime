@@ -2,8 +2,6 @@ import os from 'os';
 import { statfs } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { monitorEventLoopDelay } from 'perf_hooks';
-import * as http from 'http';
-import * as https from 'https';
 import Redis from 'ioredis';
 import { Request, Response, NextFunction } from 'express';
 import { Tenant } from '@idp/shared';
@@ -107,16 +105,11 @@ const KEY = {
   rulesIds: 'monitoring:rules:ids',
   rulesData: 'monitoring:rules:data',
   alerts: 'monitoring:alerts',
+  ingestDedupSnapshot: (id: string) => `monitoring:ingest:dedup:snapshot:${id}`,
+  ingestDedupAlert: (id: string) => `monitoring:ingest:dedup:alert:${id}`,
   meta: (instanceKey: string) => `monitoring:instance:${instanceKey}:meta`,
   heartbeat: (instanceKey: string) => `monitoring:instance:${instanceKey}:heartbeat`,
   snapshots: (instanceKey: string) => `monitoring:snapshots:${instanceKey}`,
-};
-
-const isTrue = (value: string | undefined, fallback = false) => {
-  if (!value) return fallback;
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return fallback;
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 };
 
 export class MonitoringService {
@@ -140,10 +133,7 @@ export class MonitoringService {
   private globalNetworkOutBytes = 0;
   private redis: Redis | null;
   private redisUnavailableLogged = false;
-  private readonly ingestUrl: string | null;
-  private readonly ingestToken: string | null;
-  private readonly ingestInsecureTls: boolean;
-  private ingestUnavailableLogged = false;
+  private readonly monitoringPubSubChannel: string;
 
   constructor() {
     const requestedInterval = Number.parseInt(process.env.MONITORING_INTERVAL_MS || '', 10) || DEFAULT_INTERVAL_MS;
@@ -156,9 +146,8 @@ export class MonitoringService {
     this.instanceId = this.instanceName;
     this.instanceKey = `${this.serverName}::${this.instanceId}`;
     this.storagePath = process.env.MONITORING_STORAGE_PATH?.trim() || process.cwd();
-    this.ingestUrl = this.resolveIngestUrl();
-    this.ingestToken = process.env.MONITORING_SERVER_TOKEN?.trim() || null;
-    this.ingestInsecureTls = isTrue(process.env.MONITORING_SERVER_INSECURE_TLS, false);
+    this.monitoringPubSubChannel =
+      process.env.MONITORING_PUBSUB_CHANNEL?.trim() || 'idp:monitoring:ingest';
     this.redis = this.getRedisClient();
     this.eventLoop.enable();
   }
@@ -230,7 +219,8 @@ export class MonitoringService {
   }
 
   private getRedisClient() {
-    const redisUrl = process.env.CACHE_REDIS_URL || process.env.REDIS_URL;
+    const redisUrl =
+      process.env.MONITORING_REDIS_URL || process.env.CACHE_REDIS_URL || process.env.REDIS_URL;
     if (!redisUrl) return null;
 
     const client = new Redis(redisUrl, {
@@ -247,35 +237,6 @@ export class MonitoringService {
     });
 
     return client;
-  }
-
-  private resolveIngestUrl() {
-    const explicit = process.env.MONITORING_SERVER_INGEST_URL?.trim();
-    if (explicit) {
-      if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(explicit)) {
-        console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_INGEST_URL is not HTTPS');
-        return null;
-      }
-      return explicit;
-    }
-    const base = process.env.MONITORING_SERVER_URL?.trim();
-    if (!base) return null;
-    if (
-      /\/api\/admin\/monitoring\/ingest\/?$/i.test(base) ||
-      /\/ingest\/?$/i.test(base)
-    ) {
-      if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(base)) {
-        console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_URL is not HTTPS');
-        return null;
-      }
-      return base;
-    }
-    const url = `${base.replace(/\/+$/, '')}/api/admin/monitoring/ingest`;
-    if (isTrue(process.env.MONITORING_ENFORCE_TLS, true) && !/^https:\/\//i.test(url)) {
-      console.warn('[monitoring] MONITORING_ENFORCE_TLS is enabled and MONITORING_SERVER_URL resolved to non-HTTPS ingest URL');
-      return null;
-    }
-    return url;
   }
 
   private tenantKey(tenantId: string | null, tenantHostname: string) {
@@ -351,13 +312,14 @@ export class MonitoringService {
           startedAt: snapshot.createdAt,
         }));
         pipeline.set(KEY.heartbeat(this.instanceKey), String(Date.now()), 'EX', ttlSec);
+        pipeline.set(KEY.ingestDedupSnapshot(snapshot.id), '1', 'EX', 60 * 60 * 24);
         pipeline.lpush(KEY.snapshots(this.instanceKey), JSON.stringify(snapshot));
         pipeline.ltrim(KEY.snapshots(this.instanceKey), 0, this.retention - 1);
         await pipeline.exec();
         await this.evaluateAlerts(snapshot);
       }
 
-      void this.forwardMonitoringData({ snapshot });
+      void this.publishMonitoringData({ snapshot });
       this.resetWindowStats();
     } catch (error) {
       console.error('[monitoring] snapshot collection failed:', (error as Error).message);
@@ -549,76 +511,28 @@ export class MonitoringService {
     this.applyCooldown(rule);
 
     if (this.redis) {
-      await this.redis.lpush(KEY.alerts, JSON.stringify(event));
-      await this.redis.ltrim(KEY.alerts, 0, ALERT_RETENTION - 1);
+      await this.redis
+        .multi()
+        .set(KEY.ingestDedupAlert(event.id), '1', 'EX', 60 * 60 * 24)
+        .lpush(KEY.alerts, JSON.stringify(event))
+        .ltrim(KEY.alerts, 0, ALERT_RETENTION - 1)
+        .exec();
     }
 
-    void this.forwardMonitoringData({ alert: event });
+    void this.publishMonitoringData({ alert: event });
     void this.dispatchWebhook(rule, event);
   }
 
-  private async forwardMonitoringData(payload: { snapshot?: SnapshotPayload; alert?: AlertEventPayload }) {
-    if (!this.ingestUrl) return;
-
+  private async publishMonitoringData(payload: { snapshot?: SnapshotPayload; alert?: AlertEventPayload }) {
+    if (!this.redis) return;
     try {
-      const body = JSON.stringify(payload);
-      await this.postMonitoringPayload(this.ingestUrl, body);
-      this.ingestUnavailableLogged = false;
+      await this.redis.publish(this.monitoringPubSubChannel, JSON.stringify(payload));
     } catch (error) {
-      if (!this.ingestUnavailableLogged) {
-        this.ingestUnavailableLogged = true;
-        console.warn(`[monitoring] ingest unavailable: ${(error as Error).message}`);
+      if (!this.redisUnavailableLogged) {
+        this.redisUnavailableLogged = true;
+        console.warn(`[monitoring] publish unavailable: ${(error as Error).message}`);
       }
     }
-  }
-
-  private async postMonitoringPayload(urlString: string, body: string) {
-    await new Promise<void>((resolve, reject) => {
-      const target = new URL(urlString);
-      const isHttps = target.protocol === 'https:';
-      const client = isHttps ? https : http;
-      const req = client.request(
-        {
-          protocol: target.protocol,
-          hostname: target.hostname,
-          port: target.port ? Number(target.port) : undefined,
-          path: `${target.pathname}${target.search}`,
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'content-length': Buffer.byteLength(body).toString(),
-            ...(this.ingestToken ? { authorization: `Bearer ${this.ingestToken}` } : {}),
-          },
-          rejectUnauthorized: isHttps ? !this.ingestInsecureTls : undefined,
-        },
-        (res) => {
-          const status = Number(res.statusCode || 0);
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk) => {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-          });
-          res.on('end', () => {
-            if (status >= 200 && status < 300) {
-              resolve();
-              return;
-            }
-            const responseText = Buffer.concat(chunks).toString('utf8').trim();
-            reject(
-              new Error(
-                `ingest returned ${status}${responseText ? `: ${responseText}` : ''}`
-              )
-            );
-          });
-        }
-      );
-
-      req.setTimeout(2000, () => {
-        req.destroy(new Error('ingest timeout'));
-      });
-      req.on('error', reject);
-      req.write(body);
-      req.end();
-    });
   }
 
   private resolveSnapshotMetric(metricKey: string, snapshot: SnapshotPayload): number {

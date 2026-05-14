@@ -3,6 +3,7 @@ import { RegistryController } from "../controllers/RegistryController";
 import { ModuleController } from "../controllers/ModuleController";
 import { UIEntityController } from "../controllers/UIEntityController";
 import { TenantAclController } from "../controllers/TenantAclController";
+import { OrchestrationController } from "../controllers/OrchestrationController";
 
 export const ApiRouter = (
   contextMiddleware: any,
@@ -11,7 +12,8 @@ export const ApiRouter = (
   registryController: RegistryController,
   moduleController: ModuleController,
   uiEntityController: UIEntityController,
-  tenantAclController: TenantAclController
+  tenantAclController: TenantAclController,
+  orchestrationController: OrchestrationController
 ) => {
   const router = Router();
 
@@ -172,6 +174,67 @@ export const ApiRouter = (
     contextMiddleware,
     authGuard,
     tenantAclController.updateConfig
+  );
+
+  router.get(
+    "/orchestration/agents",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.listAgents
+  );
+  router.post(
+    "/orchestration/agents/heartbeat",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.heartbeatAgent
+  );
+  router.get(
+    "/orchestration/workloads",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.listWorkloads
+  );
+  router.post(
+    "/orchestration/workloads",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.createWorkload
+  );
+  router.get(
+    "/orchestration/workloads/:id",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.getWorkload
+  );
+  router.patch(
+    "/orchestration/workloads/:id",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.updateWorkload
+  );
+  router.delete(
+    "/orchestration/workloads/:id",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.removeWorkload
+  );
+  router.get(
+    "/orchestration/workloads/:id/placements",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.listPlacements
+  );
+  router.put(
+    "/orchestration/workloads/:id/placements",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.upsertPlacements
+  );
+  router.get(
+    "/orchestration/operations",
+    contextMiddleware,
+    authGuard,
+    orchestrationController.listOperations
   );
   return router;
 };

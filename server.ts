@@ -17,6 +17,7 @@ import { ModuleController } from "./app/controllers/ModuleController";
 import { UIEntityController } from "./app/controllers/UIEntityController";
 import { ApiRouter } from "./app/routers/api";
 import { TenantAclController } from "./app/controllers/TenantAclController";
+import { OrchestrationController } from "./app/controllers/OrchestrationController";
 import { MonitoringService } from "./core/monitoring/MonitoringService";
 import { TenantSessionStore } from "./core/security/TenantSessionStore";
 import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
@@ -103,6 +104,7 @@ const bootstrap = async () => {
   const moduleController = new ModuleController(AppDataSource);
   const uiEntityController = new UIEntityController(AppDataSource);
   const tenantAclController = new TenantAclController(AppDataSource);
+  const orchestrationController = new OrchestrationController(AppDataSource);
   const tenantSessionStore = new TenantSessionStore({
     redisUrl: CORE_REDIS_URL || undefined,
     ttlSec: CORE_SSO_SESSION_TTL_SEC,
@@ -163,7 +165,8 @@ const bootstrap = async () => {
       registryController,
       moduleController,
       uiEntityController,
-      tenantAclController
+      tenantAclController,
+      orchestrationController
     )
   );
   // Serve frontend (IDE) for non-API routes
