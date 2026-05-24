@@ -13,7 +13,7 @@ const inFlight = new Map<string, Promise<NpmRegistryPayload | null>>();
 const EXTERNALS = ['react', 'react-dom', 'react-dom/client'];
 
 const cacheKey = (name: string, version: string) =>
-  `registry:npm:${encodeURIComponent(name)}:${encodeURIComponent(version)}`;
+  `registry:npm:v2:${encodeURIComponent(name)}:${encodeURIComponent(version)}`;
 
 const isBlockedName = (name: string) =>
   name.startsWith('@app/') || name.startsWith('@idp/') || name.startsWith('idp/');
@@ -25,7 +25,7 @@ const normalizeVersionToken = (value?: string) => {
 
 const parseRequestSpecifier = (
   request: string
-): { installName: string; requestSpecifier: string } | null => {
+): { installName: string; requestSpecifier: string; runtimeSpecifier: string } | null => {
   const normalized = String(request || '').trim();
   if (!normalized) return null;
   if (normalized.startsWith('.') || normalized.startsWith('/')) return null;
@@ -39,6 +39,14 @@ const parseRequestSpecifier = (
     return null;
   }
 
+  if (normalized === 'react-router/dom') {
+    return {
+      installName: 'react-router-dom',
+      requestSpecifier: normalized,
+      runtimeSpecifier: 'react-router-dom',
+    };
+  }
+
   const parts = normalized.split('/').filter(Boolean);
   if (!parts.length) return null;
   if (normalized.startsWith('@')) {
@@ -47,11 +55,19 @@ const parseRequestSpecifier = (
     const pkg = parts[1];
     if (!/^@[a-z0-9][a-z0-9._-]*$/i.test(scope)) return null;
     if (!/^[a-z0-9][a-z0-9._-]*$/i.test(pkg)) return null;
-    return { installName: `${scope}/${pkg}`, requestSpecifier: normalized };
+    return {
+      installName: `${scope}/${pkg}`,
+      requestSpecifier: normalized,
+      runtimeSpecifier: normalized,
+    };
   }
   const pkg = parts[0];
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(pkg)) return null;
-  return { installName: pkg, requestSpecifier: normalized };
+  return {
+    installName: pkg,
+    requestSpecifier: normalized,
+    runtimeSpecifier: normalized,
+  };
 };
 
 const readJsonFile = async <T>(filePath: string): Promise<T> => {
@@ -133,7 +149,7 @@ const buildNpmPayload = async (request: string, versionToken: string): Promise<N
   if (!parsed) {
     throw new Error(`Invalid npm specifier: ${request}`);
   }
-  const { installName, requestSpecifier } = parsed;
+  const { installName, requestSpecifier, runtimeSpecifier } = parsed;
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'idp-npm-ui-'));
   try {
     await fs.writeFile(
@@ -146,7 +162,7 @@ const buildNpmPayload = async (request: string, versionToken: string): Promise<N
     );
 
     await runNpmInstall(tempRoot, `${installName}@${versionToken}`);
-    const bundleSource = await bundleInstalledPackage(tempRoot, requestSpecifier);
+    const bundleSource = await bundleInstalledPackage(tempRoot, runtimeSpecifier);
     const pkgJsonPath = resolvePackageJsonPath(tempRoot, installName);
     const pkgJson = await readJsonFile<{ version?: string }>(pkgJsonPath);
     const resolvedVersion = (pkgJson.version || versionToken).trim() || versionToken;

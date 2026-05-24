@@ -131,7 +131,7 @@ export class RegistryController {
               specifier: name,
               requestedVersion: 'latest',
             },
-            relations: ['compiledCode'],
+            relations: ['compiledCode', 'sourceCode'],
             order: { createdAt: 'DESC' },
           });
         }
@@ -141,7 +141,7 @@ export class RegistryController {
             specifier: name,
             resolvedVersion: version,
           },
-          relations: ['compiledCode'],
+          relations: ['compiledCode', 'sourceCode'],
           order: { createdAt: 'DESC' },
         });
         if (exact) return exact;
@@ -151,7 +151,7 @@ export class RegistryController {
             specifier: name,
             requestedVersion: version,
           },
-          relations: ['compiledCode'],
+          relations: ['compiledCode', 'sourceCode'],
           order: { createdAt: 'DESC' },
         });
       };
@@ -214,6 +214,24 @@ export class RegistryController {
 
         const npmBuild = await findTenantNpmBuild(req.tenant.id);
         if (npmBuild?.compiledCode?.code) {
+          let shouldSkipCachedBuild = false;
+          if (npmBuild.specifier === 'react-router/dom') {
+            let runtimeSpecifier = '';
+            try {
+              const metadata = npmBuild.sourceCode?.code
+                ? JSON.parse(npmBuild.sourceCode.code)
+                : null;
+              if (metadata && typeof metadata.runtimeSpecifier === 'string') {
+                runtimeSpecifier = metadata.runtimeSpecifier.trim();
+              }
+            } catch {
+              runtimeSpecifier = '';
+            }
+            shouldSkipCachedBuild = runtimeSpecifier !== 'react-router-dom';
+          }
+          if (shouldSkipCachedBuild) {
+            // Skip stale cached artifacts and rebuild through npm resolver.
+          } else {
           const payload = {
             name: npmBuild.specifier,
             version: npmBuild.resolvedVersion,
@@ -228,6 +246,7 @@ export class RegistryController {
             );
           }
           return res.json(payload);
+          }
         }
       }
 
@@ -266,25 +285,66 @@ export class RegistryController {
   }
 
   private serializeDraft(pkg: UIPackage | GlobalUIPackage) {
+    const compiled = this.requireCompiledCode(pkg);
     return {
       name: pkg.name,
       version: pkg.draftVersion || pkg.version,
       packageVersion: pkg.version,
-      source: this.requireCompiledCode(pkg),
+      source: this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension),
       dependencies: pkg.dependencies ?? [],
       fileExtension: pkg.fileExtension,
     };
   }
 
   private serializePublished(pkg: UIPackage | GlobalUIPackage) {
+    const publishedCompiled = this.requirePublishedCompiledCode(pkg);
+    const ext = pkg.publishedFileExtension ?? pkg.fileExtension;
     return {
       name: pkg.name,
       version: pkg.publishedVersion || pkg.version,
       packageVersion: pkg.version,
-      source: this.requirePublishedCompiledCode(pkg),
+      source: this.repairUiCompiledSource(pkg.name, publishedCompiled, ext),
       dependencies: pkg.publishedDependencies ?? [],
-      fileExtension: pkg.publishedFileExtension ?? pkg.fileExtension,
+      fileExtension: ext,
     };
+  }
+
+  private repairUiCompiledSource(name: string, source: string, fileExtension?: string | null) {
+    const ext = String(fileExtension || '').trim().toLowerCase();
+    if (ext !== 'js' && ext !== 'jsx') return source;
+    if (!source || typeof source !== 'string') return source;
+    if (name.startsWith('@idp/') || name.startsWith('idp/')) return source;
+
+    const hasAnyExports =
+      source.includes('exports.') ||
+      source.includes('module.exports') ||
+      source.includes('Object.defineProperty(exports');
+    if (hasAnyExports) return source;
+
+    const pkgTail = name.split('/').pop() || name;
+    const inferred = pkgTail
+      .split(/[^a-zA-Z0-9]+/g)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join('');
+    if (!inferred) return source;
+
+    const declared =
+      new RegExp(`\\bfunction\\s+${inferred}\\b`).test(source) ||
+      new RegExp(`\\b(?:var|let|const|class)\\s+${inferred}\\b`).test(source);
+    if (!declared) return source;
+
+    const patch = `
+;try {
+  if (typeof ${inferred} !== 'undefined') {
+    if (typeof exports === 'object' && exports) {
+      if (typeof exports.default === 'undefined') exports.default = ${inferred};
+      if (typeof exports.${inferred} === 'undefined') exports.${inferred} = ${inferred};
+    }
+  }
+} catch (e) {}
+`;
+    return `${source}\n${patch}`;
   }
 
   private requireCompiledCode(pkg: UIPackage | GlobalUIPackage) {
