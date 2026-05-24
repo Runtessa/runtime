@@ -9,7 +9,9 @@ const isTruthy = (value: unknown) => {
 
 export const isDeveloperAccess = (req: TenantRequest): boolean => {
   const previewHeader = req.headers['x-dev-preview'];
-  if (isTruthy(previewHeader)) return true;
+  if (previewHeader !== undefined) {
+    return isTruthy(previewHeader);
+  }
 
   const role = String(req.account?.role ?? req.tokenPayload?.role ?? '')
     .trim()
