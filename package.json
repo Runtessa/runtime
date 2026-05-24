@@ -19,6 +19,7 @@
     "@aws-sdk/s3-request-presigner": "^3.516.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "esbuild": "^0.28.0",
     "express": "^4.19.2",
     "http-proxy-middleware": "^3.0.5",
     "ioredis": "^5.4.1",

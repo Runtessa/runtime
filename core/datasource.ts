@@ -17,6 +17,7 @@ import { PublishRequest } from '@idp/shared';
 import { User } from '@idp/shared';
 import { SourceCode } from '@idp/shared';
 import { CompiledCode } from '@idp/shared';
+import { TenantNpmPackageBuild } from '@idp/shared';
 import { OrchestrationAgent } from '@idp/shared';
 import { OrchestrationOperation } from '@idp/shared';
 import { OrchestrationPlacement } from '@idp/shared';
@@ -48,6 +49,7 @@ const connectionOptions: DataSourceOptions = {
     UIPackageRevision,
     SourceCode,
     CompiledCode,
+    TenantNpmPackageBuild,
     OrmModel,
     PublishRequest,
     OrchestrationAgent,

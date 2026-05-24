@@ -5,8 +5,10 @@ import { AppError } from '../../common/AppError';
 import { publishedCache } from '../../core/publishedCache';
 import { GlobalUIPackage } from '@idp/shared';
 import { UIPackage } from '@idp/shared';
+import { TenantNpmPackageBuild } from '@idp/shared';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
 import { resolveGlobalPackage } from '../registry/globalPackages';
+import { resolveNpmRegistryPackage } from '../registry/npmPackageResolver';
 import { TenantRequest } from '../../types/RequestContext';
 
 export class RegistryController {
@@ -87,6 +89,7 @@ export class RegistryController {
       const globalDataSource = await resolveGlobalDataSource(this.dataSource);
       const globalRepo = globalDataSource.getRepository(GlobalUIPackage);
       const pkgRepo = this.dataSource.getRepository(UIPackage);
+      const tenantNpmBuildRepo = this.dataSource.getRepository(TenantNpmPackageBuild);
 
       const findGlobalPackage = async () => {
         if (!version || version === 'latest') {
@@ -117,6 +120,39 @@ export class RegistryController {
         return pkgRepo.findOne({
           where: { tenant: { id: tenantId }, name, version },
           relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
+        });
+      };
+
+      const findTenantNpmBuild = async (tenantId: string) => {
+        if (!version || version === 'latest') {
+          return tenantNpmBuildRepo.findOne({
+            where: {
+              tenant: { id: tenantId },
+              specifier: name,
+              requestedVersion: 'latest',
+            },
+            relations: ['compiledCode'],
+            order: { createdAt: 'DESC' },
+          });
+        }
+        const exact = await tenantNpmBuildRepo.findOne({
+          where: {
+            tenant: { id: tenantId },
+            specifier: name,
+            resolvedVersion: version,
+          },
+          relations: ['compiledCode'],
+          order: { createdAt: 'DESC' },
+        });
+        if (exact) return exact;
+        return tenantNpmBuildRepo.findOne({
+          where: {
+            tenant: { id: tenantId },
+            specifier: name,
+            requestedVersion: version,
+          },
+          relations: ['compiledCode'],
+          order: { createdAt: 'DESC' },
         });
       };
 
@@ -151,38 +187,62 @@ export class RegistryController {
         });
       }
 
-      if (!req.tenant) {
-        return res.status(404).json({ error: 'Package not found' });
-      }
+      if (req.tenant) {
+        if (!isDev) {
+          const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, name, versionToken);
+          const cached = await publishedCache.get(tenantCacheKey);
+          if (cached) {
+            return res.json(cached);
+          }
+        }
 
-      if (!isDev) {
-        const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, name, versionToken);
-        const cached = await publishedCache.get(tenantCacheKey);
-        if (cached) {
-          return res.json(cached);
+        const pkg = await findPackage(req.tenant.id);
+        if (pkg) {
+          if (isDev) {
+            return res.json(this.serializeDraft(pkg));
+          }
+          if (this.hasPublished(pkg)) {
+            const payload = this.serializePublished(pkg);
+            await publishedCache.set(
+              this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+              payload
+            );
+            return res.json(payload);
+          }
+          return res.status(404).json({ error: 'Package not published' });
+        }
+
+        const npmBuild = await findTenantNpmBuild(req.tenant.id);
+        if (npmBuild?.compiledCode?.code) {
+          const payload = {
+            name: npmBuild.specifier,
+            version: npmBuild.resolvedVersion,
+            source: npmBuild.compiledCode.code,
+            dependencies: npmBuild.dependencies ?? [],
+            fileExtension: 'js',
+          };
+          if (!isDev) {
+            await publishedCache.set(
+              this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+              payload
+            );
+          }
+          return res.json(payload);
         }
       }
 
-      const pkg = await findPackage(req.tenant.id);
-
-      if (!pkg) {
-        return res.status(404).json({ error: 'Package not found' });
+      const npmPayload = await resolveNpmRegistryPackage(name, version);
+      if (npmPayload) {
+        if (!isDev && req.tenant) {
+          await publishedCache.set(
+            this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+            npmPayload
+          );
+        }
+        return res.json(npmPayload);
       }
 
-      if (isDev) {
-        return res.json(this.serializeDraft(pkg));
-      }
-
-      if (!this.hasPublished(pkg)) {
-        return res.status(404).json({ error: 'Package not published' });
-      }
-
-      const payload = this.serializePublished(pkg);
-      await publishedCache.set(
-        this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
-        payload
-      );
-      return res.json(payload);
+      return res.status(404).json({ error: 'Package not found' });
     } catch (error) {
       next(error);
     }
