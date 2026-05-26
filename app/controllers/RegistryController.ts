@@ -1,23 +1,25 @@
 import { NextFunction, Response } from 'express';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import { isDeveloperAccess } from '../../common/devAccess';
 import { AppError } from '../../common/AppError';
 import { publishedCache } from '../../core/publishedCache';
-import { GlobalUIPackage } from '@idp/shared';
+import { GlobalUIPackage, GlobalModulePackage } from '@idp/shared';
 import { UIPackage } from '@idp/shared';
 import { TenantNpmPackageBuild } from '@idp/shared';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
 import { resolveGlobalPackage } from '../registry/globalPackages';
 import { resolveNpmRegistryPackage } from '../registry/npmPackageResolver';
 import { TenantRequest } from '../../types/RequestContext';
+import { transformSync } from 'esbuild';
 
 export class RegistryController {
   constructor(private readonly dataSource: DataSource) {}
 
   resolveTenantOnly = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, version } = req.params;
-      if (!name) {
+      const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
+      const version = req.params?.version;
+      if (!requestedName) {
         return res.status(400).json({ error: 'Package name required' });
       }
       if (!req.tenant) {
@@ -29,9 +31,13 @@ export class RegistryController {
       const pkgRepo = this.dataSource.getRepository(UIPackage);
 
       const findPackage = async (tenantId: string) => {
+        const lookupNames = this.buildTenantLookupNames(requestedName);
+        if (!lookupNames.includes(requestedName)) {
+          lookupNames.unshift(requestedName);
+        }
         if (!version || version === 'latest') {
           const latest = await pkgRepo.find({
-            where: { tenant: { id: tenantId }, name },
+            where: { tenant: { id: tenantId }, name: In(lookupNames) },
             relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
             order: { createdAt: 'DESC' },
             take: 1,
@@ -39,13 +45,13 @@ export class RegistryController {
           return latest[0] ?? null;
         }
         return pkgRepo.findOne({
-          where: { tenant: { id: tenantId }, name, version },
+          where: { tenant: { id: tenantId }, name: In(lookupNames), version },
           relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
         });
       };
 
       if (!isDev) {
-        const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, name, versionToken);
+        const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken);
         const cached = await publishedCache.get(tenantCacheKey);
         if (cached) {
           return res.json(cached);
@@ -68,7 +74,7 @@ export class RegistryController {
 
       const payload = this.serializePublished(pkg);
       await publishedCache.set(
-        this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+        this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
         payload
       );
       return res.json(payload);
@@ -79,8 +85,9 @@ export class RegistryController {
 
   resolve = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, version } = req.params;
-      if (!name) {
+      const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
+      const version = req.params?.version;
+      if (!requestedName) {
         return res.status(400).json({ error: 'Package name required' });
       }
       const versionToken = version || 'latest';
@@ -88,29 +95,55 @@ export class RegistryController {
 
       const globalDataSource = await resolveGlobalDataSource(this.dataSource);
       const globalRepo = globalDataSource.getRepository(GlobalUIPackage);
+      const globalModuleRepo = globalDataSource.getRepository(GlobalModulePackage);
       const pkgRepo = this.dataSource.getRepository(UIPackage);
       const tenantNpmBuildRepo = this.dataSource.getRepository(TenantNpmPackageBuild);
 
       const findGlobalPackage = async () => {
-        if (!version || version === 'latest') {
-          const latest = await globalRepo.find({
-            where: { name },
-            relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
-            order: { createdAt: 'DESC' },
-            take: 1,
-          });
-          return latest[0] ?? null;
+        const lookupNames = this.buildGlobalLookupNames(requestedName);
+        if (!lookupNames.includes(requestedName)) {
+          lookupNames.unshift(requestedName);
         }
-        return globalRepo.findOne({
-          where: { name, version },
-          relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
-        });
+
+        const findInRepo = async (repo: any) => {
+          if (!version || version === 'latest') {
+            const latest = await repo.find({
+              where: { name: In(lookupNames) },
+              relations: [
+                'sourceCode',
+                'compiledCode',
+                'publishedSourceCode',
+                'publishedCompiledCode',
+              ],
+              order: { createdAt: 'DESC' },
+              take: 1,
+            });
+            return latest[0] ?? null;
+          }
+          return repo.findOne({
+            where: { name: In(lookupNames), version },
+            relations: [
+              'sourceCode',
+              'compiledCode',
+              'publishedSourceCode',
+              'publishedCompiledCode',
+            ],
+          });
+        };
+
+        const pkg = await findInRepo(globalRepo);
+        if (pkg) return pkg;
+        return findInRepo(globalModuleRepo);
       };
 
       const findPackage = async (tenantId: string) => {
+        const lookupNames = this.buildTenantLookupNames(requestedName);
+        if (!lookupNames.includes(requestedName)) {
+          lookupNames.unshift(requestedName);
+        }
         if (!version || version === 'latest') {
           const latest = await pkgRepo.find({
-            where: { tenant: { id: tenantId }, name },
+            where: { tenant: { id: tenantId }, name: In(lookupNames) },
             relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
             order: { createdAt: 'DESC' },
             take: 1,
@@ -118,7 +151,7 @@ export class RegistryController {
           return latest[0] ?? null;
         }
         return pkgRepo.findOne({
-          where: { tenant: { id: tenantId }, name, version },
+          where: { tenant: { id: tenantId }, name: In(lookupNames), version },
           relations: ['sourceCode', 'compiledCode', 'publishedSourceCode', 'publishedCompiledCode'],
         });
       };
@@ -128,7 +161,7 @@ export class RegistryController {
           return tenantNpmBuildRepo.findOne({
             where: {
               tenant: { id: tenantId },
-              specifier: name,
+              specifier: requestedName,
               requestedVersion: 'latest',
             },
             relations: ['compiledCode', 'sourceCode'],
@@ -136,28 +169,28 @@ export class RegistryController {
           });
         }
         const exact = await tenantNpmBuildRepo.findOne({
-          where: {
-            tenant: { id: tenantId },
-            specifier: name,
-            resolvedVersion: version,
-          },
-          relations: ['compiledCode', 'sourceCode'],
+            where: {
+              tenant: { id: tenantId },
+              specifier: requestedName,
+              resolvedVersion: version,
+            },
+            relations: ['compiledCode', 'sourceCode'],
           order: { createdAt: 'DESC' },
         });
         if (exact) return exact;
         return tenantNpmBuildRepo.findOne({
-          where: {
-            tenant: { id: tenantId },
-            specifier: name,
-            requestedVersion: version,
-          },
-          relations: ['compiledCode', 'sourceCode'],
+            where: {
+              tenant: { id: tenantId },
+              specifier: requestedName,
+              requestedVersion: version,
+            },
+            relations: ['compiledCode', 'sourceCode'],
           order: { createdAt: 'DESC' },
         });
       };
 
       if (!isDev) {
-        const globalCacheKey = this.registryCacheKey('global', undefined, name, versionToken);
+        const globalCacheKey = this.registryCacheKey('global', undefined, requestedName, versionToken);
         const cached = await publishedCache.get(globalCacheKey);
         if (cached) {
           return res.json(cached);
@@ -167,16 +200,25 @@ export class RegistryController {
       const globalPkg = await findGlobalPackage();
       if (globalPkg) {
         if (isDev) {
-          return res.json(this.serializeDraft(globalPkg));
+          return res.json({
+            ...this.serializeDraft(globalPkg),
+            name: requestedName, // Use requested name
+          });
         }
         if (this.hasPublished(globalPkg)) {
-          const payload = this.serializePublished(globalPkg);
-          await publishedCache.set(this.registryCacheKey('global', undefined, name, versionToken), payload);
+          const payload = {
+            ...this.serializePublished(globalPkg),
+            name: requestedName, // Use requested name
+          };
+          await publishedCache.set(
+            this.registryCacheKey('global', undefined, requestedName, versionToken),
+            payload
+          );
           return res.json(payload);
         }
       }
 
-      const builtinPackage = resolveGlobalPackage(name, version);
+      const builtinPackage = resolveGlobalPackage(requestedName, version);
       if (builtinPackage) {
         return res.json({
           name: builtinPackage.name,
@@ -189,7 +231,12 @@ export class RegistryController {
 
       if (req.tenant) {
         if (!isDev) {
-          const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, name, versionToken);
+          const tenantCacheKey = this.registryCacheKey(
+            'tenant',
+            req.tenant.id,
+            requestedName,
+            versionToken
+          );
           const cached = await publishedCache.get(tenantCacheKey);
           if (cached) {
             return res.json(cached);
@@ -199,12 +246,18 @@ export class RegistryController {
         const pkg = await findPackage(req.tenant.id);
         if (pkg) {
           if (isDev) {
-            return res.json(this.serializeDraft(pkg));
+            return res.json({
+              ...this.serializeDraft(pkg),
+              name: requestedName, // Use requested name
+            });
           }
           if (this.hasPublished(pkg)) {
-            const payload = this.serializePublished(pkg);
+            const payload = {
+              ...this.serializePublished(pkg),
+              name: requestedName, // Use requested name
+            };
             await publishedCache.set(
-              this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+              this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
               payload
             );
             return res.json(payload);
@@ -241,7 +294,7 @@ export class RegistryController {
           };
           if (!isDev) {
             await publishedCache.set(
-              this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+              this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
               payload
             );
           }
@@ -250,11 +303,11 @@ export class RegistryController {
         }
       }
 
-      const npmPayload = await resolveNpmRegistryPackage(name, version);
+      const npmPayload = await resolveNpmRegistryPackage(requestedName, version);
       if (npmPayload) {
         if (!isDev && req.tenant) {
           await publishedCache.set(
-            this.registryCacheKey('tenant', req.tenant.id, name, versionToken),
+            this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
             npmPayload
           );
         }
@@ -269,6 +322,47 @@ export class RegistryController {
 
   private hasPublished(pkg: UIPackage | GlobalUIPackage) {
     return Boolean(pkg.publishedCompiledCode?.code) && Boolean(pkg.publishedVersion);
+  }
+
+  private normalizeRequestedName(raw: string | undefined) {
+    if (!raw) return '';
+    let normalized = String(raw).trim();
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        const decoded = decodeURIComponent(normalized);
+        if (decoded === normalized) break;
+        normalized = decoded.trim();
+      } catch {
+        break;
+      }
+    }
+    normalized = normalized.replace(/\\/g, '/');
+    normalized = normalized.replace(/^\/+/, '').replace(/\/+$/, '');
+    return normalized;
+  }
+
+  private buildGlobalLookupNames(name: string) {
+    const base = this.normalizeRequestedName(name);
+    const values = new Set<string>();
+    if (!base) return [] as string[];
+    values.add(base);
+    if (base.startsWith('@shared/')) {
+      values.add(base.slice('@shared/'.length));
+    } else if (!base.startsWith('@')) {
+      values.add(`@shared/${base}`);
+    }
+    return Array.from(values);
+  }
+
+  private buildTenantLookupNames(name: string) {
+    const base = this.normalizeRequestedName(name);
+    const values = new Set<string>();
+    if (!base) return [] as string[];
+    values.add(base);
+    if (base.startsWith('@shared/')) {
+      values.add(base.slice('@shared/'.length));
+    }
+    return Array.from(values);
   }
 
   private registryCacheKey(
@@ -313,13 +407,18 @@ export class RegistryController {
     const ext = String(fileExtension || '').trim().toLowerCase();
     if (ext !== 'js' && ext !== 'jsx') return source;
     if (!source || typeof source !== 'string') return source;
-    if (name.startsWith('@idp/') || name.startsWith('idp/')) return source;
+    const materialized = this.materializeVirtualPackageSource(source, ext) || source;
+    if (
+      name.startsWith('@idp/') ||
+      name.startsWith('idp/')
+    )
+      return materialized;
 
     const hasAnyExports =
-      source.includes('exports.') ||
-      source.includes('module.exports') ||
-      source.includes('Object.defineProperty(exports');
-    if (hasAnyExports) return source;
+      materialized.includes('exports.') ||
+      materialized.includes('module.exports') ||
+      materialized.includes('Object.defineProperty(exports');
+    if (hasAnyExports) return materialized;
 
     const pkgTail = name.split('/').pop() || name;
     const inferred = pkgTail
@@ -327,12 +426,12 @@ export class RegistryController {
       .filter(Boolean)
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join('');
-    if (!inferred) return source;
+    if (!inferred) return materialized;
 
     const declared =
-      new RegExp(`\\bfunction\\s+${inferred}\\b`).test(source) ||
-      new RegExp(`\\b(?:var|let|const|class)\\s+${inferred}\\b`).test(source);
-    if (!declared) return source;
+      new RegExp(`\\bfunction\\s+${inferred}\\b`).test(materialized) ||
+      new RegExp(`\\b(?:var|let|const|class)\\s+${inferred}\\b`).test(materialized);
+    if (!declared) return materialized;
 
     const patch = `
 ;try {
@@ -344,7 +443,89 @@ export class RegistryController {
   }
 } catch (e) {}
 `;
-    return `${source}\n${patch}`;
+    return `${materialized}\n${patch}`;
+  }
+
+  private materializeVirtualPackageSource(source: string, fileExtension?: string | null) {
+    const raw = String(source || '').trim();
+    if (!raw || raw[0] !== '{') return null;
+    try {
+      const parsed = JSON.parse(raw) as {
+        entryPath?: unknown;
+        files?: Array<{
+          path?: unknown;
+          fileExtension?: unknown;
+          content?: unknown;
+        }>;
+      };
+      if (!parsed || !Array.isArray(parsed.files) || parsed.files.length === 0) return null;
+
+      const normalizePath = (value: string) =>
+        value.replace(/\\/g, '/').replace(/^\/+/, '').trim();
+      const pickLoader = (pathValue: string, extHint?: string | null) => {
+        const fromPath = pathValue.includes('.') ? pathValue.split('.').pop() || '' : '';
+        const ext = String(fromPath || extHint || '')
+          .trim()
+          .toLowerCase();
+        if (ext === 'ts') return 'ts' as const;
+        if (ext === 'tsx') return 'tsx' as const;
+        if (ext === 'js') return 'js' as const;
+        if (ext === 'jsx') return 'jsx' as const;
+        return 'jsx' as const;
+      };
+
+      const entries = parsed.files
+        .map((file) => {
+          const pathValue = typeof file?.path === 'string' ? normalizePath(file.path) : '';
+          const content = typeof file?.content === 'string' ? file.content : '';
+          if (!pathValue || !content) return null;
+          const loader = pickLoader(
+            pathValue,
+            typeof file?.fileExtension === 'string' ? file.fileExtension : fileExtension
+          );
+          return { path: pathValue, content, loader };
+        })
+        .filter(Boolean) as Array<{ path: string; content: string; loader: 'ts' | 'tsx' | 'js' | 'jsx' }>;
+      if (entries.length === 0) return null;
+
+      const entryHint =
+        typeof parsed.entryPath === 'string' && parsed.entryPath.trim()
+          ? normalizePath(parsed.entryPath)
+          : '';
+      const preferred = [
+        entryHint,
+        'src/index.tsx',
+        'src/index.ts',
+        'src/index.jsx',
+        'src/index.js',
+        'index.tsx',
+        'index.ts',
+        'index.jsx',
+        'index.js',
+      ].filter(Boolean);
+      let entry = entries[0];
+      for (const candidate of preferred) {
+        const found = entries.find((item) => item.path === candidate);
+        if (found) {
+          entry = found;
+          break;
+        }
+      }
+
+      const transformed = transformSync(entry.content, {
+        loader: entry.loader,
+        format: 'cjs',
+        target: 'es2019',
+        sourcemap: false,
+        jsx: 'transform',
+        jsxFactory: 'React.createElement',
+        jsxFragment: 'React.Fragment',
+      });
+      const code = String(transformed.code || '').trim();
+      return code || null;
+    } catch {
+      return null;
+    }
   }
 
   private requireCompiledCode(pkg: UIPackage | GlobalUIPackage) {

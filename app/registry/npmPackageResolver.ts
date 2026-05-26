@@ -16,7 +16,7 @@ const cacheKey = (name: string, version: string) =>
   `registry:npm:v2:${encodeURIComponent(name)}:${encodeURIComponent(version)}`;
 
 const isBlockedName = (name: string) =>
-  name.startsWith('@app/') || name.startsWith('@idp/') || name.startsWith('idp/');
+  name.startsWith('@app/') || name.startsWith('@idp/') || name.startsWith('idp/') || name.startsWith('@shared/');
 
 const normalizeVersionToken = (value?: string) => {
   const token = (value || 'latest').trim();
