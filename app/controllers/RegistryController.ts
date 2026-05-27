@@ -28,6 +28,7 @@ export class RegistryController {
 
       const versionToken = version || 'latest';
       const isDev = isDeveloperAccess(req);
+      const preferDraftSource = this.shouldPreferDraftSource(req);
       const pkgRepo = this.dataSource.getRepository(UIPackage);
 
       const findPackage = async (tenantId: string) => {
@@ -65,7 +66,7 @@ export class RegistryController {
       }
 
       if (isDev) {
-        return res.json(this.serializeDraft(pkg));
+        return res.json(this.serializeDraft(pkg, preferDraftSource));
       }
 
       if (!this.hasPublished(pkg)) {
@@ -92,6 +93,7 @@ export class RegistryController {
       }
       const versionToken = version || 'latest';
       const isDev = isDeveloperAccess(req);
+      const preferDraftSource = this.shouldPreferDraftSource(req);
 
       const globalDataSource = await resolveGlobalDataSource(this.dataSource);
       const globalRepo = globalDataSource.getRepository(GlobalUIPackage);
@@ -201,7 +203,7 @@ export class RegistryController {
       if (globalPkg) {
         if (isDev) {
           return res.json({
-            ...this.serializeDraft(globalPkg),
+            ...this.serializeDraft(globalPkg, preferDraftSource),
             name: requestedName, // Use requested name
           });
         }
@@ -247,7 +249,7 @@ export class RegistryController {
         if (pkg) {
           if (isDev) {
             return res.json({
-              ...this.serializeDraft(pkg),
+              ...this.serializeDraft(pkg, preferDraftSource),
               name: requestedName, // Use requested name
             });
           }
@@ -378,16 +380,73 @@ export class RegistryController {
     return `registry:global:${encoded}:${version}`;
   }
 
-  private serializeDraft(pkg: UIPackage | GlobalUIPackage) {
+  private shouldPreferDraftSource(req: TenantRequest) {
+    const raw = req.headers['x-dev-source'];
+    if (raw === undefined) return false;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  }
+
+  private serializeDraft(pkg: UIPackage | GlobalUIPackage, preferSource = false) {
     const compiled = this.requireCompiledCode(pkg);
+    const source = this.resolveDraftRuntimeSource(pkg, compiled, preferSource);
     return {
       name: pkg.name,
       version: pkg.draftVersion || pkg.version,
       packageVersion: pkg.version,
-      source: this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension),
+      source,
       dependencies: pkg.dependencies ?? [],
       fileExtension: pkg.fileExtension,
     };
+  }
+
+  private resolveDraftRuntimeSource(
+    pkg: UIPackage | GlobalUIPackage,
+    compiled: string,
+    preferSource: boolean
+  ) {
+    if (!preferSource) {
+      return this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
+    }
+
+    const sourceCode = pkg.sourceCode?.code;
+    if (!sourceCode || typeof sourceCode !== 'string' || !sourceCode.trim()) {
+      return this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
+    }
+
+    const ext = String(pkg.fileExtension || '').trim().toLowerCase();
+    if (ext === 'css' || ext === 'json') {
+      return sourceCode;
+    }
+
+    const loader = ext === 'js' || ext === 'jsx' || ext === 'ts' || ext === 'tsx' ? ext : 'jsx';
+    const sourcefile =
+      pkg.name && String(pkg.name).includes('.')
+        ? String(pkg.name)
+        : `${pkg.name}.${loader}`;
+    try {
+      const transformed = transformSync(sourceCode, {
+        loader: loader as 'js' | 'jsx' | 'ts' | 'tsx',
+        format: 'cjs',
+        target: 'es2019',
+        sourcemap: 'inline',
+        sourcefile,
+        jsx: 'transform',
+        jsxFactory: 'React.createElement',
+        jsxFragment: 'React.Fragment',
+      });
+      const code = String(transformed.code || '').trim();
+      if (!code) {
+        return this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
+      }
+      return this.repairUiCompiledSource(pkg.name, code, pkg.fileExtension);
+    } catch {
+      return this.repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
+    }
   }
 
   private serializePublished(pkg: UIPackage | GlobalUIPackage) {

@@ -3,6 +3,8 @@ import "reflect-metadata";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import path from "path";
+import { promises as fs } from "fs";
+import { transformSync } from "esbuild";
 import { AppError } from "./common/AppError";
 import { initializeDataSource, AppDataSource } from "./core/datasource";
 import { CryptoService } from "./core/security/CryptoService";
@@ -24,6 +26,59 @@ import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
 
 const app = express();
 
+const isDevelopmentEnv = process.env.NODE_ENV !== "production";
+
+const KERNEL_SOURCE_IMPORT_REACT =
+  'import React from "https://esm.sh/react@19?dev";';
+const KERNEL_SOURCE_IMPORT_REACT_DOM =
+  'import { createRoot } from "https://esm.sh/react-dom@19/client?dev";';
+
+const getKernelSourceCandidates = () => {
+  const rootDir = path.resolve(__dirname, "..");
+  return [
+    path.resolve(rootDir, "kernel", "src", "index.ts"),
+    path.resolve(rootDir, "src", "kernel", "src", "index.ts"),
+  ];
+};
+
+const readKernelSourceTs = async (): Promise<string> => {
+  const candidates = getKernelSourceCandidates();
+  for (const candidate of candidates) {
+    try {
+      return await fs.readFile(candidate, "utf8");
+    } catch {
+      // continue probing
+    }
+  }
+  throw new Error("Kernel source file not found");
+};
+
+const buildKernelSourceRuntime = async (): Promise<string> => {
+  const sourceTs = await readKernelSourceTs();
+  const patchedSource = sourceTs
+    .replace(
+      /import\s+React\s+from\s+["']react["'];?/,
+      KERNEL_SOURCE_IMPORT_REACT
+    )
+    .replace(
+      /import\s*\{\s*createRoot\s*\}\s*from\s*["']react-dom\/client["'];?/,
+      KERNEL_SOURCE_IMPORT_REACT_DOM
+    );
+
+  const transformed = transformSync(patchedSource, {
+    loader: "ts",
+    format: "esm",
+    target: "es2020",
+    sourcemap: "inline",
+    sourcefile: "kernel/src/index.ts",
+    jsx: "transform",
+    jsxFactory: "React.createElement",
+    jsxFragment: "React.Fragment",
+  });
+
+  return `${transformed.code}\nwindow.Kernel = Kernel;\nwindow.__IDP_KERNEL_BUILD__ = "dev-source";\n`;
+};
+
 // CORS for API routes; frontend is proxied so origin is same
 app.use(
   cors({
@@ -34,6 +89,22 @@ app.use(
 
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: true }));
+
+if (isDevelopmentEnv) {
+  app.get("/kernel-source.js", async (_req, res) => {
+    try {
+      const js = await buildKernelSourceRuntime();
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      res.status(200).send(js);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to build kernel source runtime";
+      res.status(500).json({ error: message });
+    }
+  });
+}
+
 app.use("/public", express.static("public"));
 
 // Fallback static (for production build)
