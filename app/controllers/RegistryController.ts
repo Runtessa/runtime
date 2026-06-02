@@ -19,6 +19,7 @@ export class RegistryController {
     try {
       const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
       const version = req.params?.version;
+      const metadataOnly = this.isMetadataOnly(req);
       if (!requestedName) {
         return res.status(400).json({ error: 'Package name required' });
       }
@@ -53,9 +54,16 @@ export class RegistryController {
 
       if (!isDev) {
         const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken);
-        const cached = await publishedCache.get(tenantCacheKey);
+        const cached = await publishedCache.get<{
+          name: string;
+          version: string;
+          packageVersion?: string;
+          dependencies?: string[];
+          fileExtension?: string;
+          source?: string;
+        }>(tenantCacheKey);
         if (cached) {
-          return res.json(cached);
+          return res.json(this.formatRegistryResponse(cached, metadataOnly));
         }
       }
 
@@ -66,7 +74,12 @@ export class RegistryController {
       }
 
       if (isDev) {
-        return res.json(this.serializeDraft(pkg, preferDraftSource));
+        return res.json(
+          this.formatRegistryResponse(
+            this.serializeDraft(pkg, preferDraftSource),
+            metadataOnly
+          )
+        );
       }
 
       if (!this.hasPublished(pkg)) {
@@ -78,7 +91,7 @@ export class RegistryController {
         this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
         payload
       );
-      return res.json(payload);
+      return res.json(this.formatRegistryResponse(payload, metadataOnly));
     } catch (error) {
       next(error);
     }
@@ -88,6 +101,7 @@ export class RegistryController {
     try {
       const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
       const version = req.params?.version;
+      const metadataOnly = this.isMetadataOnly(req);
       if (!requestedName) {
         return res.status(400).json({ error: 'Package name required' });
       }
@@ -193,19 +207,31 @@ export class RegistryController {
 
       if (!isDev) {
         const globalCacheKey = this.registryCacheKey('global', undefined, requestedName, versionToken);
-        const cached = await publishedCache.get(globalCacheKey);
+        const cached = await publishedCache.get<{
+          name: string;
+          version: string;
+          packageVersion?: string;
+          dependencies?: string[];
+          fileExtension?: string;
+          source?: string;
+        }>(globalCacheKey);
         if (cached) {
-          return res.json(cached);
+          return res.json(this.formatRegistryResponse(cached, metadataOnly));
         }
       }
 
       const globalPkg = await findGlobalPackage();
       if (globalPkg) {
         if (isDev) {
-          return res.json({
-            ...this.serializeDraft(globalPkg, preferDraftSource),
-            name: requestedName, // Use requested name
-          });
+          return res.json(
+            this.formatRegistryResponse(
+              {
+                ...this.serializeDraft(globalPkg, preferDraftSource),
+                name: requestedName, // Use requested name
+              },
+              metadataOnly
+            )
+          );
         }
         if (this.hasPublished(globalPkg)) {
           const payload = {
@@ -216,19 +242,19 @@ export class RegistryController {
             this.registryCacheKey('global', undefined, requestedName, versionToken),
             payload
           );
-          return res.json(payload);
+          return res.json(this.formatRegistryResponse(payload, metadataOnly));
         }
       }
 
       const builtinPackage = resolveGlobalPackage(requestedName, version);
       if (builtinPackage) {
-        return res.json({
+        return res.json(this.formatRegistryResponse({
           name: builtinPackage.name,
           version: builtinPackage.version,
           source: builtinPackage.source,
           dependencies: builtinPackage.dependencies ?? [],
           fileExtension: builtinPackage.fileExtension,
-        });
+        }, metadataOnly));
       }
 
       if (req.tenant) {
@@ -239,19 +265,31 @@ export class RegistryController {
             requestedName,
             versionToken
           );
-          const cached = await publishedCache.get(tenantCacheKey);
+          const cached = await publishedCache.get<{
+            name: string;
+            version: string;
+            packageVersion?: string;
+            dependencies?: string[];
+            fileExtension?: string;
+            source?: string;
+          }>(tenantCacheKey);
           if (cached) {
-            return res.json(cached);
+            return res.json(this.formatRegistryResponse(cached, metadataOnly));
           }
         }
 
         const pkg = await findPackage(req.tenant.id);
         if (pkg) {
           if (isDev) {
-            return res.json({
-              ...this.serializeDraft(pkg, preferDraftSource),
-              name: requestedName, // Use requested name
-            });
+            return res.json(
+              this.formatRegistryResponse(
+                {
+                  ...this.serializeDraft(pkg, preferDraftSource),
+                  name: requestedName, // Use requested name
+                },
+                metadataOnly
+              )
+            );
           }
           if (this.hasPublished(pkg)) {
             const payload = {
@@ -262,7 +300,7 @@ export class RegistryController {
               this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
               payload
             );
-            return res.json(payload);
+            return res.json(this.formatRegistryResponse(payload, metadataOnly));
           }
           return res.status(404).json({ error: 'Package not published' });
         }
@@ -300,7 +338,7 @@ export class RegistryController {
               payload
             );
           }
-          return res.json(payload);
+          return res.json(this.formatRegistryResponse(payload, metadataOnly));
           }
         }
       }
@@ -313,7 +351,7 @@ export class RegistryController {
             npmPayload
           );
         }
-        return res.json(npmPayload);
+        return res.json(this.formatRegistryResponse(npmPayload, metadataOnly));
       }
 
       return res.status(404).json({ error: 'Package not found' });
@@ -389,6 +427,37 @@ export class RegistryController {
     if (typeof value !== 'string') return false;
     const normalized = value.trim().toLowerCase();
     return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  }
+
+  private isMetadataOnly(req: TenantRequest) {
+    const raw = req.query?.meta;
+    if (raw === undefined) return false;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value !== 'string') return false;
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  }
+
+  private formatRegistryResponse<
+    T extends {
+      name: string;
+      version: string;
+      packageVersion?: string;
+      dependencies?: string[];
+      fileExtension?: string;
+      source?: string;
+    },
+  >(payload: T, metadataOnly: boolean) {
+    if (!metadataOnly) return payload;
+    return {
+      name: payload.name,
+      version: payload.version,
+      packageVersion: payload.packageVersion,
+      dependencies: payload.dependencies ?? [],
+      fileExtension: payload.fileExtension,
+    };
   }
 
   private serializeDraft(pkg: UIPackage | GlobalUIPackage, preferSource = false) {
