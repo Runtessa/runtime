@@ -1,5 +1,6 @@
 import { Tenant } from '@idp/shared';
 import { resolveTenantPwaConfig } from './tenantPwa';
+import { withTenantAssetVersion } from './tenantAssetVersion';
 
 type TenantDocumentBranding = {
   title: string;
@@ -42,10 +43,12 @@ const normalizeIconUrl = (value: string) => {
 
 export const resolveTenantDocumentBranding = (tenant?: Tenant | null): TenantDocumentBranding => {
   const adapterConfig = asObject(tenant?.adapterConfig);
+  const tenantBranding = asObject((tenant as any)?.brandingConfig);
   const settings = asObject(adapterConfig.settings);
   const branding = {
     ...asObject(settings.branding),
     ...asObject(adapterConfig.branding),
+    ...tenantBranding,
   };
   const ui = {
     ...asObject(settings.ui),
@@ -93,21 +96,25 @@ export const resolveTenantDocumentBranding = (tenant?: Tenant | null): TenantDoc
 
 export const applyTenantDocumentBranding = (html: string, tenant?: Tenant | null) => {
   const branding = resolveTenantDocumentBranding(tenant);
+  const faviconUrl = withTenantAssetVersion(branding.faviconUrl, tenant);
+  const appleTouchIconUrl = withTenantAssetVersion(branding.appleTouchIconUrl, tenant);
+  const manifestUrl = resolveTenantPwaConfig(tenant)
+    ? withTenantAssetVersion('/manifest.webmanifest', tenant)
+    : null;
   let nextHtml = html.replace(
     /<title>[\s\S]*?<\/title>/i,
     `<title>${escapeHtml(branding.title)}</title>`
   );
 
-  const pwaConfig = resolveTenantPwaConfig(tenant);
   nextHtml = nextHtml.replace(/<link\s+[^>]*rel=["']manifest["'][^>]*>\s*/gi, '');
 
   const iconLinks = [
-    pwaConfig ? '<link rel="manifest" href="/manifest.webmanifest" />' : '',
-    branding.faviconUrl
-      ? `<link rel="icon" href="${escapeHtml(branding.faviconUrl)}" />`
+    manifestUrl ? `<link rel="manifest" href="${escapeHtml(manifestUrl)}" />` : '',
+    faviconUrl
+      ? `<link rel="icon" href="${escapeHtml(faviconUrl)}" />`
       : '',
-    branding.appleTouchIconUrl
-      ? `<link rel="apple-touch-icon" href="${escapeHtml(branding.appleTouchIconUrl)}" />`
+    appleTouchIconUrl
+      ? `<link rel="apple-touch-icon" href="${escapeHtml(appleTouchIconUrl)}" />`
       : '',
   ].filter(Boolean);
 

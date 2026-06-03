@@ -1,4 +1,5 @@
 import { Tenant } from '@idp/shared';
+import { withTenantAssetVersion } from './tenantAssetVersion';
 
 export type TenantPwaConfig = {
   enabled: boolean;
@@ -92,12 +93,17 @@ const normalizeIcons = (raw: unknown, fallbackIcon: string) => {
 export const resolveTenantPwaConfig = (tenant?: Tenant | null): TenantPwaConfig | null => {
   const pwa = asObject(tenant?.pwaConfig);
   const adapterConfig = asObject(tenant?.adapterConfig);
+  const tenantBranding = asObject((tenant as any)?.brandingConfig);
   const settings = asObject(adapterConfig.settings);
   const legacyPwa = asObject(settings.pwa);
   const source = { ...legacyPwa, ...pwa };
   if (source.enabled !== true) return null;
 
-  const branding = { ...asObject(adapterConfig.branding), ...asObject(asObject(settings).branding) };
+  const branding = {
+    ...asObject(asObject(settings).branding),
+    ...asObject(adapterConfig.branding),
+    ...tenantBranding,
+  };
   const name = firstString(source.name, source.appName, branding.title, branding.name, tenant?.hostname) || 'Tenant App';
   const shortName = firstString(source.shortName, source.short_name, name).slice(0, 32) || name;
   const backgroundColor = normalizeColor(source.backgroundColor ?? source.background_color, '#121212');
@@ -132,7 +138,10 @@ export const buildTenantPwaManifest = (tenant?: Tenant | null) => {
     display: config.display,
     theme_color: config.themeColor,
     background_color: config.backgroundColor,
-    icons: config.icons,
+    icons: config.icons.map((icon) => ({
+      ...icon,
+      src: withTenantAssetVersion(icon.src, tenant) || icon.src,
+    })),
   };
 };
 
