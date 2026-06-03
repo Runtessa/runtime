@@ -23,6 +23,8 @@ import { OrchestrationController } from "./app/controllers/OrchestrationControll
 import { MonitoringService } from "./core/monitoring/MonitoringService";
 import { TenantSessionStore } from "./core/security/TenantSessionStore";
 import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
+import { applyTenantDocumentBranding } from "./app/tenantDocumentBranding";
+import { TenantRequest } from "./types/RequestContext";
 
 const app = express();
 
@@ -240,18 +242,27 @@ const bootstrap = async () => {
       orchestrationController
     )
   );
-  // Serve frontend (IDE) for non-API routes
-  app.get("*", (req, res, next) => {
+  // Serve tenant frontend with tenant-specific document metadata.
+  app.get("*", (req, _res, next) => {
     const p = req.path.toLowerCase();
     if (
       p.startsWith("/api") ||
       p.startsWith("/auth") ||
       p.startsWith("/admin")
     ) {
-      return next();
+      return next("route");
     }
-    const indexPath = path.resolve(__dirname, "..", "public", "index.html");
-    return res.sendFile(indexPath);
+    return next();
+  }, optionalContextMiddleware, async (req: TenantRequest, res, next) => {
+    try {
+      const indexPath = path.resolve(__dirname, "..", "public", "index.html");
+      const html = await fs.readFile(indexPath, "utf8");
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+      return res.status(200).send(applyTenantDocumentBranding(html, req.tenant));
+    } catch (error) {
+      return next(error);
+    }
   });
 
   app.all("*", contextMiddleware, optionalAuthGuard, dispatcher.handle);
