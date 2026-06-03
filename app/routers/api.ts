@@ -59,6 +59,16 @@ export const ApiRouter = (
   };
 
   router.get(
+    "/registry-catalog",
+    optionalContextMiddleware,
+    registryController.catalog
+  );
+  router.get(
+    "/registry-tenant-catalog",
+    contextMiddleware,
+    registryController.catalogTenantOnly
+  );
+  router.get(
     "/registry/*",
     optionalContextMiddleware,
     normalizeRegistryParams,
