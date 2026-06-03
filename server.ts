@@ -24,6 +24,7 @@ import { MonitoringService } from "./core/monitoring/MonitoringService";
 import { TenantSessionStore } from "./core/security/TenantSessionStore";
 import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
 import { applyTenantDocumentBranding } from "./app/tenantDocumentBranding";
+import { buildTenantPwaManifest, buildTenantServiceWorker } from "./app/tenantPwa";
 import { TenantRequest } from "./types/RequestContext";
 
 const app = express();
@@ -242,6 +243,27 @@ const bootstrap = async () => {
       orchestrationController
     )
   );
+
+  app.get("/manifest.webmanifest", optionalContextMiddleware, (req: TenantRequest, res) => {
+    const manifest = buildTenantPwaManifest(req.tenant);
+    if (!manifest) {
+      return res.status(404).json({ error: "PWA is not enabled for this tenant" });
+    }
+    res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    return res.status(200).json(manifest);
+  });
+
+  app.get("/service-worker.js", optionalContextMiddleware, (req: TenantRequest, res) => {
+    const source = buildTenantServiceWorker(req.tenant);
+    if (!source) {
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      return res.status(404).send("// PWA is not enabled for this tenant.\n");
+    }
+    res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    return res.status(200).send(source);
+  });
   // Serve tenant frontend with tenant-specific document metadata.
   app.get("*", (req, _res, next) => {
     const p = req.path.toLowerCase();

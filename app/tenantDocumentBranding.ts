@@ -1,4 +1,5 @@
 import { Tenant } from '@idp/shared';
+import { resolveTenantPwaConfig } from './tenantPwa';
 
 type TenantDocumentBranding = {
   title: string;
@@ -97,7 +98,11 @@ export const applyTenantDocumentBranding = (html: string, tenant?: Tenant | null
     `<title>${escapeHtml(branding.title)}</title>`
   );
 
+  const pwaConfig = resolveTenantPwaConfig(tenant);
+  nextHtml = nextHtml.replace(/<link\s+[^>]*rel=["']manifest["'][^>]*>\s*/gi, '');
+
   const iconLinks = [
+    pwaConfig ? '<link rel="manifest" href="/manifest.webmanifest" />' : '',
     branding.faviconUrl
       ? `<link rel="icon" href="${escapeHtml(branding.faviconUrl)}" />`
       : '',
