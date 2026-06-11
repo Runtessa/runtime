@@ -275,7 +275,7 @@ const bootstrap = async () => {
       return next("route");
     }
     return next();
-  }, optionalContextMiddleware, async (req: TenantRequest, res, next) => {
+  }, optionalContextMiddleware, optionalAuthGuard, async (req: TenantRequest, res, next) => {
     try {
       const indexPath = path.resolve(__dirname, "..", "public", "index.html");
       const html = await fs.readFile(indexPath, "utf8");
