@@ -1,7 +1,10 @@
 import { NextFunction, Request, Response } from 'express';
 import { DataSource } from 'typeorm';
-import { AppError } from '../../common/AppError';
 import { Tenant } from '@idp/shared';
+import {
+  normalizeTenantHostname,
+  normalizeTenantResourceConfig,
+} from '../admin/tenantProvisioning';
 
 export class AdminController {
   constructor(private readonly dataSource: DataSource) {}
@@ -9,12 +12,8 @@ export class AdminController {
   createTenant = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { hostname, resourceConfig } = req.body ?? {};
-      if (!hostname) {
-        throw new AppError('hostname is required', 400);
-      }
-
-      const normalizedHost = String(hostname).toLowerCase();
-      const config = this.normalizeResourceConfig(resourceConfig);
+      const normalizedHost = normalizeTenantHostname(hostname);
+      const config = normalizeTenantResourceConfig(resourceConfig);
 
       const repo = this.dataSource.getRepository(Tenant);
       const existing = await repo.findOne({ where: { hostname: normalizedHost } });
@@ -39,13 +38,4 @@ export class AdminController {
     }
   };
 
-  private normalizeResourceConfig(input: unknown): { memory: number; timeout: number } {
-    const defaults = { memory: 512, timeout: 5_000 };
-    if (!input || typeof input !== 'object') {
-      return defaults;
-    }
-    const memory = Number((input as Record<string, unknown>).memory) || defaults.memory;
-    const timeout = Number((input as Record<string, unknown>).timeout) || defaults.timeout;
-    return { memory, timeout };
-  }
 }
