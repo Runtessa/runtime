@@ -7,6 +7,7 @@
     "build:shared": "tsc -p ../packages/shared/tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "build:all": "npm run build:shared && npm run build",
+    "test:security": "ts-node --transpile-only tests/coreHttpSecurity.test.ts",
     "start": "ts-node server.ts",
     "start:dist": "NODE_PATH=./node_modules node ../../dist/server.js",
     "dev": "ts-node server.ts",

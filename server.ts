@@ -1,8 +1,6 @@
 import "dotenv/config";
 import "reflect-metadata";
 import express, { NextFunction, Request, Response } from "express";
-import cors from "cors";
-import { timingSafeEqual } from "crypto";
 import path from "path";
 import { promises as fs } from "fs";
 import { transformSync } from "esbuild";
@@ -26,70 +24,21 @@ import { TenantSessionStore } from "./core/security/TenantSessionStore";
 import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
 import { applyTenantDocumentBranding } from "./app/tenantDocumentBranding";
 import { buildTenantPwaManifest, buildTenantServiceWorker } from "./app/tenantPwa";
+import {
+  createCoreAdminGuard,
+  createCoreCors,
+  parseAllowedOrigins,
+} from "./app/security/coreHttpSecurity";
 import { TenantRequest } from "./types/RequestContext";
 
 const app = express();
 
 const isDevelopmentEnv = process.env.NODE_ENV !== "production";
-const CORE_ALLOWED_ORIGINS = new Set(
-  (process.env.CORE_ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-);
-
-const isLocalDevelopmentOrigin = (origin: string) =>
-  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
-
-const coreCors = cors({
-  credentials: true,
-  origin: (origin, callback) => {
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    if (CORE_ALLOWED_ORIGINS.has(origin)) {
-      return callback(null, true);
-    }
-
-    if (isDevelopmentEnv && isLocalDevelopmentOrigin(origin)) {
-      return callback(null, true);
-    }
-
-    return callback(null, false);
-  },
+const coreCors = createCoreCors({
+  allowedOrigins: parseAllowedOrigins(process.env.CORE_ALLOWED_ORIGINS),
+  isDevelopmentEnv,
 });
-
-const secureTokenEquals = (actual: string, expected: string) => {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    timingSafeEqual(actualBuffer, expectedBuffer)
-  );
-};
-
-const readAdminToken = (req: Request) => {
-  const authorization = req.get("authorization") || "";
-  const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
-  return bearerMatch?.[1]?.trim() || String(req.get("x-core-admin-token") || "").trim();
-};
-
-const coreAdminGuard = (req: Request, _res: Response, next: NextFunction) => {
-  const expectedToken = String(process.env.CORE_ADMIN_TOKEN || "").trim();
-  if (!expectedToken) {
-    return next(
-      new AppError("Core admin API is not configured", 503, "core_admin_not_configured")
-    );
-  }
-
-  const actualToken = readAdminToken(req);
-  if (!actualToken || !secureTokenEquals(actualToken, expectedToken)) {
-    return next(new AppError("Admin authentication required", 401, "admin_auth_required"));
-  }
-
-  return next();
-};
+const coreAdminGuard = createCoreAdminGuard(() => process.env.CORE_ADMIN_TOKEN);
 
 const KERNEL_SOURCE_IMPORT_REACT =
   'import React from "https://esm.sh/react@19?dev";';
