@@ -34,6 +34,9 @@ import { TenantRequest } from "./types/RequestContext";
 const app = express();
 
 const isDevelopmentEnv = process.env.NODE_ENV !== "production";
+if (String(process.env.CORE_TRUST_PROXY || "").trim().toLowerCase() === "true") {
+  app.set("trust proxy", 1);
+}
 const coreCors = createCoreCors({
   allowedOrigins: parseAllowedOrigins(process.env.CORE_ALLOWED_ORIGINS),
   isDevelopmentEnv,

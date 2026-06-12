@@ -67,14 +67,15 @@ export const safeReturnTo = (input: unknown, fallback = "/"): string => {
 };
 
 export const requestOrigin = (req: Request): string => {
+  const trustsProxyHeaders = Boolean(req.app?.get?.("trust proxy"));
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
     .split(",")[0]
     ?.trim();
   const forwardedHost = String(req.headers["x-forwarded-host"] || "")
     .split(",")[0]
     ?.trim();
-  const protocol = forwardedProto || req.protocol || "http";
-  const host = forwardedHost || req.get("host") || "localhost";
+  const protocol = (trustsProxyHeaders && forwardedProto) || req.protocol || "http";
+  const host = (trustsProxyHeaders && forwardedHost) || req.get("host") || "localhost";
   return `${protocol}://${host}`;
 };
 
