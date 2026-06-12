@@ -9,6 +9,13 @@ import { TenantNpmPackageBuild } from '@idp/shared';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
 import { resolveGlobalPackage } from '../registry/globalPackages';
 import { resolveNpmRegistryPackage } from '../registry/npmPackageResolver';
+import {
+  buildCatalogAliases,
+  buildGlobalLookupNames,
+  buildTenantLookupNames,
+  normalizeRequestedName,
+  registryCacheKey,
+} from '../registry/registryNaming';
 import { TenantRequest } from '../../types/RequestContext';
 import { transformSync } from 'esbuild';
 
@@ -36,7 +43,7 @@ export class RegistryController {
 
   resolveTenantOnly = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
-      const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
+      const requestedName = normalizeRequestedName(req.params?.name as string | undefined);
       const version = req.params?.version;
       const metadataOnly = this.isMetadataOnly(req);
       if (!requestedName) {
@@ -52,7 +59,7 @@ export class RegistryController {
       const pkgRepo = this.dataSource.getRepository(UIPackage);
 
       const findPackage = async (tenantId: string) => {
-        const lookupNames = this.buildTenantLookupNames(requestedName);
+        const lookupNames = buildTenantLookupNames(requestedName);
         if (!lookupNames.includes(requestedName)) {
           lookupNames.unshift(requestedName);
         }
@@ -72,7 +79,7 @@ export class RegistryController {
       };
 
       if (!isDev) {
-        const tenantCacheKey = this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken);
+        const tenantCacheKey = registryCacheKey('tenant', req.tenant.id, requestedName, versionToken);
         const cached = await publishedCache.get<{
           name: string;
           version: string;
@@ -107,7 +114,7 @@ export class RegistryController {
 
       const payload = this.serializePublished(pkg);
       await publishedCache.set(
-        this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+        registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
         payload
       );
       return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -118,7 +125,7 @@ export class RegistryController {
 
   resolve = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
-      const requestedName = this.normalizeRequestedName(req.params?.name as string | undefined);
+      const requestedName = normalizeRequestedName(req.params?.name as string | undefined);
       const version = req.params?.version;
       const metadataOnly = this.isMetadataOnly(req);
       if (!requestedName) {
@@ -135,7 +142,7 @@ export class RegistryController {
       const tenantNpmBuildRepo = this.dataSource.getRepository(TenantNpmPackageBuild);
 
       const findGlobalPackage = async () => {
-        const lookupNames = this.buildGlobalLookupNames(requestedName);
+        const lookupNames = buildGlobalLookupNames(requestedName);
         if (!lookupNames.includes(requestedName)) {
           lookupNames.unshift(requestedName);
         }
@@ -172,7 +179,7 @@ export class RegistryController {
       };
 
       const findPackage = async (tenantId: string) => {
-        const lookupNames = this.buildTenantLookupNames(requestedName);
+        const lookupNames = buildTenantLookupNames(requestedName);
         if (!lookupNames.includes(requestedName)) {
           lookupNames.unshift(requestedName);
         }
@@ -225,7 +232,7 @@ export class RegistryController {
       };
 
       if (!isDev) {
-        const globalCacheKey = this.registryCacheKey('global', undefined, requestedName, versionToken);
+        const globalCacheKey = registryCacheKey('global', undefined, requestedName, versionToken);
         const cached = await publishedCache.get<{
           name: string;
           version: string;
@@ -259,7 +266,7 @@ export class RegistryController {
             name: requestedName, // Use requested name
           };
           await publishedCache.set(
-            this.registryCacheKey('global', undefined, requestedName, versionToken),
+            registryCacheKey('global', undefined, requestedName, versionToken),
             payload
           );
           return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -279,7 +286,7 @@ export class RegistryController {
 
       if (req.tenant) {
         if (!isDev) {
-          const tenantCacheKey = this.registryCacheKey(
+          const tenantCacheKey = registryCacheKey(
             'tenant',
             req.tenant.id,
             requestedName,
@@ -318,7 +325,7 @@ export class RegistryController {
               name: requestedName, // Use requested name
             };
             await publishedCache.set(
-              this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+              registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
               payload
             );
             return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -356,7 +363,7 @@ export class RegistryController {
           };
           if (!isDev) {
             await publishedCache.set(
-              this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+              registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
               payload
             );
           }
@@ -369,7 +376,7 @@ export class RegistryController {
       if (npmPayload) {
         if (!isDev && req.tenant) {
           await publishedCache.set(
-            this.registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+            registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
             npmPayload
           );
         }
@@ -467,17 +474,11 @@ export class RegistryController {
       cacheKey: this.resolvePackageCacheKey(pkg),
       dependencies: pkg.publishedDependencies ?? [],
       fileExtension: pkg.publishedFileExtension ?? pkg.fileExtension,
-      aliases: this.buildCatalogAliases(pkg.name, scope),
+      aliases: buildCatalogAliases(pkg.name, scope),
       scope,
     };
   }
 
-  private buildCatalogAliases(name: string, scope: 'tenant' | 'global') {
-    const aliases = scope === 'global'
-      ? this.buildGlobalLookupNames(name)
-      : this.buildTenantLookupNames(name);
-    return Array.from(new Set([name, ...aliases]));
-  }
 
   private resolvePackageCacheKey(pkg: UIPackage | GlobalUIPackage | GlobalModulePackage) {
     const version = pkg.publishedVersion || pkg.version;
@@ -496,59 +497,6 @@ export class RegistryController {
     return String(value);
   }
 
-  private normalizeRequestedName(raw: string | undefined) {
-    if (!raw) return '';
-    let normalized = String(raw).trim();
-    for (let i = 0; i < 3; i += 1) {
-      try {
-        const decoded = decodeURIComponent(normalized);
-        if (decoded === normalized) break;
-        normalized = decoded.trim();
-      } catch {
-        break;
-      }
-    }
-    normalized = normalized.replace(/\\/g, '/');
-    normalized = normalized.replace(/^\/+/, '').replace(/\/+$/, '');
-    return normalized;
-  }
-
-  private buildGlobalLookupNames(name: string) {
-    const base = this.normalizeRequestedName(name);
-    const values = new Set<string>();
-    if (!base) return [] as string[];
-    values.add(base);
-    if (base.startsWith('@shared/')) {
-      values.add(base.slice('@shared/'.length));
-    } else if (!base.startsWith('@')) {
-      values.add(`@shared/${base}`);
-    }
-    return Array.from(values);
-  }
-
-  private buildTenantLookupNames(name: string) {
-    const base = this.normalizeRequestedName(name);
-    const values = new Set<string>();
-    if (!base) return [] as string[];
-    values.add(base);
-    if (base.startsWith('@shared/')) {
-      values.add(base.slice('@shared/'.length));
-    }
-    return Array.from(values);
-  }
-
-  private registryCacheKey(
-    scope: 'tenant' | 'global',
-    tenantId: string | undefined,
-    name: string,
-    version: string
-  ) {
-    const encoded = encodeURIComponent(name);
-    if (scope === 'tenant' && tenantId) {
-      return `registry:tenant:${tenantId}:${encoded}:${version}`;
-    }
-    return `registry:global:${encoded}:${version}`;
-  }
 
   private shouldPreferDraftSource(req: TenantRequest) {
     const raw = req.headers['x-dev-source'];
