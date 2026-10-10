@@ -1,3 +1,4 @@
+import { parseNpmRequestSpecifier as parseRequestSpecifier } from '@idp/shared/dist/runtime/npm-specifier';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -21,53 +22,6 @@ const isBlockedName = (name: string) =>
 const normalizeVersionToken = (value?: string) => {
   const token = (value || 'latest').trim();
   return token || 'latest';
-};
-
-const parseRequestSpecifier = (
-  request: string
-): { installName: string; requestSpecifier: string; runtimeSpecifier: string } | null => {
-  const normalized = String(request || '').trim();
-  if (!normalized) return null;
-  if (normalized.startsWith('.') || normalized.startsWith('/')) return null;
-  if (
-    normalized.includes('\0') ||
-    normalized.includes('\\') ||
-    normalized.includes('..') ||
-    normalized.includes('?') ||
-    normalized.includes('#')
-  ) {
-    return null;
-  }
-
-  if (normalized === 'react-router/dom') {
-    return {
-      installName: 'react-router-dom',
-      requestSpecifier: normalized,
-      runtimeSpecifier: 'react-router-dom',
-    };
-  }
-
-  const parts = normalized.split('/').filter(Boolean);
-  if (!parts.length) return null;
-  if (normalized.startsWith('@')) {
-    if (parts.length < 2) return null;
-    const scope = parts[0];
-    const pkg = parts[1];
-    if (!/^@[a-z0-9][a-z0-9._-]*$/i.test(scope)) return null;
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(pkg)) return null;
-    return {
-      installName: `${scope}/${pkg}`,
-      requestSpecifier: normalized,
-      runtimeSpecifier: normalized,
-    };
-  }
-  const pkg = parts[0];
-  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(pkg)) return null;
-  return {
-    installName: pkg,
-    requestSpecifier: normalized,
-    runtimeSpecifier: normalized,
-  };
 };
 
 const readJsonFile = async <T>(filePath: string): Promise<T> => {

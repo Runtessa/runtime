@@ -61,6 +61,7 @@ export class RegistryController {
       const preferDraftSource = this.shouldPreferDraftSource(req);
       const pkgRepo = this.dataSource.getRepository(UIPackage);
 
+      // Duplicate D11: see docs/release/code-integrity-audit.md before changing either copy.
       const findPackage = async (tenantId: string) => {
         const lookupNames = buildTenantLookupNames(requestedName);
         if (!lookupNames.includes(requestedName)) {
@@ -181,6 +182,7 @@ export class RegistryController {
         return findInRepo(globalModuleRepo);
       };
 
+      // Duplicate D11: see docs/release/code-integrity-audit.md before changing either copy.
       const findPackage = async (tenantId: string) => {
         const lookupNames = buildTenantLookupNames(requestedName);
         if (!lookupNames.includes(requestedName)) {
