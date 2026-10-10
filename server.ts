@@ -249,7 +249,8 @@ const bootstrap = async () => {
       moduleController,
       uiEntityController,
       tenantAclController,
-      orchestrationController
+      orchestrationController,
+      optionalAuthGuard
     )
   );
 

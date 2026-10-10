@@ -13,9 +13,12 @@ export const ApiRouter = (
   moduleController: ModuleController,
   uiEntityController: UIEntityController,
   tenantAclController: TenantAclController,
-  orchestrationController: OrchestrationController
+  orchestrationController: OrchestrationController,
+  optionalAuthGuard: any
 ) => {
   const router = Router();
+  const registryAuth = (req: any, res: any, next: any) =>
+    req.tenant ? optionalAuthGuard(req, res, next) : next();
 
   const decodeSegment = (value?: string) => {
     if (!value) return value;
@@ -61,22 +64,26 @@ export const ApiRouter = (
   router.get(
     "/registry-catalog",
     optionalContextMiddleware,
+    registryAuth,
     registryController.catalog
   );
   router.get(
     "/registry-tenant-catalog",
     contextMiddleware,
+    registryAuth,
     registryController.catalogTenantOnly
   );
   router.get(
     "/registry/*",
     optionalContextMiddleware,
+    registryAuth,
     normalizeRegistryParams,
     registryController.resolve
   );
   router.get(
     "/registry-tenant/*",
     contextMiddleware,
+    registryAuth,
     normalizeRegistryParams,
     registryController.resolveTenantOnly
   );

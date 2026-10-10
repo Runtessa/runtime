@@ -4,6 +4,10 @@ RUN apk add --no-cache bubblewrap
 
 WORKDIR /app/src/core
 
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
+COPY licenses /app/licenses
+
+
 # Prepare artifacts first:
 # npm run docker:prepare
 # docker build -f src/core/Dockerfile .

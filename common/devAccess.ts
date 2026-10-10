@@ -8,13 +8,16 @@ const isTruthy = (value: unknown) => {
 };
 
 export const isDeveloperAccess = (req: TenantRequest): boolean => {
+  if (!req.tenant || !req.account || req.tokenPayload?.tenantId !== req.tenant.id) {
+    return false;
+  }
+  const role = String(req.account.role ?? '').trim().toUpperCase();
+  if (role !== 'DEVELOPER' && role !== 'ADMIN') return false;
+
   const previewHeader = req.headers['x-dev-preview'];
   if (previewHeader !== undefined) {
     return isTruthy(previewHeader);
   }
 
-  const role = String(req.account?.role ?? req.tokenPayload?.role ?? '')
-    .trim()
-    .toUpperCase();
-  return role === 'DEVELOPER' || role === 'ADMIN';
+  return true;
 };
