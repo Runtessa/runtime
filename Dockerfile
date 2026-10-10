@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM node:22-alpine AS runner
+RUN apk add --no-cache bubblewrap
 
 WORKDIR /app/src/core
 
@@ -32,5 +33,7 @@ ENV NODE_ENV=production
 ENV PORT=3005
 
 EXPOSE 3005
+
+USER node
 
 CMD ["npm", "run", "start:dist"]

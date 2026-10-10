@@ -70,7 +70,7 @@ export class SharedModuleLoader {
       require: (id: string) => {
         throw new Error(`External require not allowed: ${id}`);
       },
-      console,
+      console: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
     };
     const context = vm.createContext(sandboxGlobals);
     const script = new vm.Script(`"use strict";\n${source}`, {

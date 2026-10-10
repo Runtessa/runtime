@@ -25,6 +25,7 @@ import { SharedModuleLoader } from './sharedModuleLoader';
 import { RuntimeAdapterConnections } from './runtimeAdapterConnections';
 import { loadOrmModels, parseOrmAdapterKey } from './ormAdapterHelpers';
 import { resolveTenantDirectoryAuthConfig, type TenantDirectoryAuthConfig } from './adapterTenantDirectoryConfig';
+import { createRuntimeCapabilities } from './runtimeCapabilities';
 
 export class AdapterFactory {
   private sharedModuleCache: Map<string, unknown> = new Map();
@@ -38,12 +39,19 @@ export class AdapterFactory {
   private readonly sharedModuleLoader: SharedModuleLoader;
   private readonly connections: RuntimeAdapterConnections;
 
-  constructor(private readonly dataSource: DataSource, cryptoService: CryptoService) {
+  constructor(private readonly dataSource: DataSource, private readonly cryptoService: CryptoService,
+    secretService?: AdapterSecretService,
+    private readonly directoryConfig?: () => Promise<TenantDirectoryAuthConfig>,
+  ) {
     this.compilerAdapter = new CompilerAdapter();
     this.runtimeStage = resolveRuntimeStageFromEnv();
-    this.secretService = new AdapterSecretService(dataSource, cryptoService, this.runtimeStage);
+    this.secretService = secretService ?? new AdapterSecretService(dataSource, cryptoService, this.runtimeStage);
     this.sharedModuleLoader = new SharedModuleLoader(dataSource, this.sharedModuleCache);
     this.connections = new RuntimeAdapterConnections(this.secretService);
+  }
+
+  runtimeCapabilities(tenant: Tenant, allowDraft: boolean) {
+    return createRuntimeCapabilities(this.dataSource, this.cryptoService, tenant, allowDraft);
   }
 
   build(
@@ -202,7 +210,7 @@ export class AdapterFactory {
 
     const readConfig = async () => {
       if (!configPromise) {
-        configPromise = resolveTenantDirectoryAuthConfig(tenant, this.secretService);
+        configPromise = this.directoryConfig ? this.directoryConfig() : resolveTenantDirectoryAuthConfig(tenant, this.secretService);
       }
       return configPromise;
     };

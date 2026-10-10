@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { isDeveloperAccess } from '../../common/devAccess';
 import { publishedCache } from '../../core/publishedCache';
-import { AdapterFactory, SandboxAdapters } from '../../engine/AdapterFactory';
+import { AdapterFactory } from '../../engine/AdapterFactory';
 import { SandboxRunner, SandboxRequestContext } from '../../engine/SandboxRunner';
 import { GlobalModuleEndpoint, GlobalModulePackage, HttpMethod, ModuleEntity, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
@@ -23,8 +23,6 @@ type SharedEndpointMatch = {
   packageName: string;
   packageVersion: string;
 };
-
-const MAX_SHARED_TIMEOUT_MS = 30_000;
 
 export class Dispatcher {
   constructor(
@@ -155,14 +153,17 @@ export class Dispatcher {
           : undefined,
       };
 
-      const sandboxResult = sharedMatch
-        ? await this.runSharedEndpoint(sharedMatch, requestContext, adapters)
-        : await this.sandboxRunner.run(module.code, {
-            request: requestContext,
-            adapters,
-            tenant: req.tenant as Tenant,
-            allowDraftSharedModules: isDev,
-          });
+      const code = sharedMatch ? `module.exports = async (request, adapters) => {
+        const exported = await adapters.shared.require(${JSON.stringify(sharedMatch.packageName)}, ${JSON.stringify(sharedMatch.packageVersion)});
+        const handler = typeof exported === 'function' ? exported : exported && exported.default;
+        if (typeof handler !== 'function') throw Object.assign(new Error('Shared module must export a function'), {statusCode: 400});
+        return handler(request, adapters);
+      };` : module.code;
+      const sandboxResult = await this.sandboxRunner.run(code, {
+        request: requestContext, adapters, tenant: req.tenant as Tenant,
+        allowDraftSharedModules: isDev,
+        capabilities: this.adapterFactory.runtimeCapabilities(req.tenant as Tenant, isDev),
+      });
 
       res.status(sandboxResult.statusCode ?? 200);
       if (sandboxResult.headers) {
@@ -231,56 +232,6 @@ export class Dispatcher {
     }
 
     return null;
-  }
-
-  private resolveSharedHandler(exported: unknown): unknown {
-    if (typeof exported === 'function') return exported;
-    if (exported && typeof exported === 'object' && (exported as Record<string, unknown>).default) {
-      return (exported as Record<string, unknown>).default;
-    }
-    return null;
-  }
-
-  private async runSharedEndpoint(
-    sharedMatch: SharedEndpointMatch,
-    requestContext: SandboxRequestContext,
-    adapters: SandboxAdapters,
-  ): Promise<{ statusCode: number; headers?: Record<string, string>; body?: unknown }> {
-    const handlerExports = await adapters.shared.require(
-      sharedMatch.packageName,
-      sharedMatch.packageVersion,
-    );
-    const handler = this.resolveSharedHandler(handlerExports);
-    if (typeof handler !== 'function') {
-      throw new AppError('Shared module must export a function', 400);
-    }
-
-    const timeoutMs = Math.min(
-      requestContext.tenant.resourceConfig?.timeout ?? 5_000,
-      MAX_SHARED_TIMEOUT_MS,
-    );
-
-    try {
-      const result = await Promise.race([
-        Promise.resolve(handler(requestContext, adapters)),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Execution timed out')), timeoutMs),
-        ),
-      ]);
-
-      if (result && typeof result === 'object') {
-        const typed = result as { statusCode?: number; headers?: Record<string, string>; body?: unknown };
-        return {
-          statusCode: typed.statusCode ?? 200,
-          headers: typed.headers,
-          body: typed.body,
-        };
-      }
-
-      return { statusCode: 200, body: result };
-    } catch (error) {
-      throw new AppError(`Shared module error: ${(error as Error).message}`, 500);
-    }
   }
 
   private resolveEndpointConfig(

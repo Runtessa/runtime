@@ -56,7 +56,8 @@ export const executeSandboxModule = async (
   const sandboxGlobals: Record<string, unknown> = {
     request: frozenRequest,
     adapters,
-    console,
+    // Tenant output is returned explicitly; never write arbitrary tenant content to service logs.
+    console: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
   };
   Object.freeze(sandboxGlobals);
 
@@ -93,6 +94,7 @@ export const executeSandboxModule = async (
     ]);
     return normalizeSandboxResult(result);
   } catch (error) {
-    throw new AppError(`Module error: ${(error as Error).message}`, 500);
+    throw new AppError(`Module error: ${(error as Error).message}`,
+      (error as { statusCode?: number }).statusCode === 400 ? 400 : 500);
   }
 };
