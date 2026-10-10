@@ -24,8 +24,7 @@ ENV NPM_CONFIG_FETCH_TIMEOUT=1800000
 COPY .docker-build/core/src/packages/shared /app/src/packages/shared
 COPY .docker-build/core/package.json ./
 COPY .docker-build/core/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm,id=npm-core,sharing=locked \
-    npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
 RUN mkdir -p /app/src \
     && ln -s /app/src/core/node_modules /app/src/node_modules
