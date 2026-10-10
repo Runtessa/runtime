@@ -17,7 +17,12 @@
     "start:dist": "NODE_PATH=./node_modules node ../../dist/server.js",
     "dev": "npm run start",
     "seed": "ts-node seed.ts",
-    "seed-packages": "ts-node seed-packages.ts"
+    "seed-packages": "ts-node seed-packages.ts",
+    "db:status": "node ../packages/shared/dist/database/cli.js status --target core",
+    "db:plan": "node ../packages/shared/dist/database/cli.js plan --target core",
+    "db:diff": "node ../packages/shared/dist/database/cli.js diff --target core",
+    "db:migrate": "node ../packages/shared/dist/database/cli.js migrate --target core",
+    "db:adopt": "node ../packages/shared/dist/database/cli.js adopt --target core"
   },
   "dependencies": {
     "@idp/shared": "file:../packages/shared",
