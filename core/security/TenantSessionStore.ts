@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import Redis from 'ioredis';
 import { CoreAuthUser } from '../../types/AuthUser';
+import { safeErrorMeta } from '@idp/shared';
 
 export interface TenantSessionRecord {
   id: string;
@@ -43,7 +44,7 @@ export class TenantSessionStore {
         enableReadyCheck: true,
       });
       this.redis.on('error', (error) => {
-        console.warn(`[tenant-sso] redis unavailable, using memory fallback: ${error.message}`);
+        console.warn('[tenant-sso] redis unavailable, using memory fallback:', safeErrorMeta(error));
       });
     } else {
       this.redis = null;

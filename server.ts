@@ -1,10 +1,10 @@
 import "dotenv/config";
 import "reflect-metadata";
-import express, { NextFunction, Request, Response } from "express";
+import express from "express";
 import path from "path";
 import { promises as fs } from "fs";
 import { transformSync } from "esbuild";
-import { AppError } from "./common/AppError";
+import { coreErrorHandler } from './app/security/errorHandler';
 import { initializeDataSource, AppDataSource } from "./core/datasource";
 import { CryptoService } from "./core/security/CryptoService";
 import { AdapterFactory } from "./engine/AdapterFactory";
@@ -30,6 +30,7 @@ import {
   parseAllowedOrigins,
 } from "./app/security/coreHttpSecurity";
 import { TenantRequest } from "./types/RequestContext";
+import { safeErrorMeta } from '@idp/shared';
 
 const app = express();
 
@@ -297,29 +298,7 @@ const bootstrap = async () => {
 
   app.all("*", contextMiddleware, optionalAuthGuard, dispatcher.handle);
 
-  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
-    const isAppError = err instanceof AppError;
-    const status = isAppError ? err.status : 500;
-    const payload: Record<string, unknown> = {
-      error: err.message,
-      ...(isAppError && (err as AppError).code
-        ? { code: (err as AppError).code }
-        : {}),
-    };
-
-    const isDev = process.env.NODE_ENV !== "production";
-    if (isDev) {
-      payload.stack = err.stack;
-    } else if (status >= 500) {
-      payload.error = "Internal server error";
-    }
-
-    if (!isAppError) {
-      console.error("Unhandled error:", err);
-    }
-
-    return res.status(status).json(payload);
-  });
+  app.use(coreErrorHandler);
 
   app.listen(port, () => {
     console.log(`FaaS runtime listening on port ${port}`);
@@ -327,6 +306,6 @@ const bootstrap = async () => {
 };
 
 bootstrap().catch((error) => {
-  console.error("Failed to start server:", error);
+  console.error("Failed to start server:", safeErrorMeta(error));
   process.exit(1);
 });

@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto';
 import { monitorEventLoopDelay } from 'perf_hooks';
 import Redis from 'ioredis';
 import { Request, Response, NextFunction } from 'express';
-import { Tenant } from '@idp/shared';
+import { Tenant, safeErrorMeta } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
 type TenantWindowStat = {
@@ -232,7 +232,7 @@ export class MonitoringService {
     client.on('error', (err) => {
       if (!this.redisUnavailableLogged) {
         this.redisUnavailableLogged = true;
-        console.warn(`[monitoring] redis unavailable: ${err.message}`);
+        console.warn('[monitoring] redis unavailable:', safeErrorMeta(err));
       }
     });
 
@@ -322,7 +322,7 @@ export class MonitoringService {
       void this.publishMonitoringData({ snapshot });
       this.resetWindowStats();
     } catch (error) {
-      console.error('[monitoring] snapshot collection failed:', (error as Error).message);
+      console.error('[monitoring] snapshot collection failed:', safeErrorMeta(error));
     } finally {
       this.tickRunning = false;
     }
@@ -530,7 +530,7 @@ export class MonitoringService {
     } catch (error) {
       if (!this.redisUnavailableLogged) {
         this.redisUnavailableLogged = true;
-        console.warn(`[monitoring] publish unavailable: ${(error as Error).message}`);
+        console.warn('[monitoring] publish unavailable:', safeErrorMeta(error));
       }
     }
   }

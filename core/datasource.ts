@@ -22,6 +22,8 @@ import { OrchestrationAgent } from '@idp/shared';
 import { OrchestrationOperation } from '@idp/shared';
 import { OrchestrationPlacement } from '@idp/shared';
 import { OrchestrationWorkload } from '@idp/shared';
+import { safeErrorMeta } from '@idp/shared';
+import { SafeDatabaseLogger } from './safeDatabaseLogger';
 
 const connectionOptions: DataSourceOptions = {
   type: 'postgres',
@@ -33,6 +35,7 @@ const connectionOptions: DataSourceOptions = {
   database: process.env.DB_NAME,
   synchronize: true,
   logging: process.env.DB_LOGGING === 'true',
+  logger: new SafeDatabaseLogger(process.env.DB_LOGGING === 'true'),
   entities: [
     Tenant,
     Account,
@@ -72,7 +75,7 @@ export const initializeDataSource = async (): Promise<DataSource> => {
     return await AppDataSource.initialize();
   } catch (error) {
     // Avoid leaking credentials and keep logs minimal for production readiness
-    console.error('Failed to initialize database connection:', (error as Error).message);
+    console.error('Failed to initialize database connection:', safeErrorMeta(error));
     throw error;
   }
 };

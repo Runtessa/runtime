@@ -5,6 +5,7 @@ import { GlobalModulePackage } from '@idp/shared';
 import { GlobalModulePackageFile } from '@idp/shared';
 import { GlobalUIPackage } from '@idp/shared';
 import { GlobalUIPackageFile } from '@idp/shared';
+import { safeErrorMeta } from '@idp/shared';
 
 const dbType = (process.env.CORE_DB_TYPE ||
   process.env.DB_TYPE ||
@@ -109,8 +110,7 @@ export const resolveGlobalDataSource = async (fallback: DataSource) => {
     return await getCoreGlobalDataSource();
   } catch (err) {
     if (!loggedError) {
-      const message = (err as Error)?.message || 'Unknown error';
-      console.warn(`Global package DB unavailable, falling back to app DB: ${message}`);
+      console.warn('Global package DB unavailable, falling back to app DB:', safeErrorMeta(err));
       loggedError = true;
     }
     return fallback;

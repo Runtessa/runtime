@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { safeErrorMeta } from '@idp/shared';
 
 const DEFAULT_TTL_SECONDS = 30 * 60;
 let redisClient: Redis | null = null;
@@ -14,7 +15,7 @@ const getRedisClient = () => {
   });
   redisClient.on('error', (err) => {
     if (!loggedRedisError) {
-      console.warn(`Redis cache unavailable, falling back to memory: ${err.message}`);
+      console.warn('Redis cache unavailable, falling back to memory:', safeErrorMeta(err));
       loggedRedisError = true;
     }
   });
