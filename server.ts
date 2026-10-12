@@ -3,7 +3,7 @@ import "reflect-metadata";
 import express from "express";
 import path from "path";
 import { promises as fs } from "fs";
-import { transformSync } from "esbuild";
+import { buildKernelSourceRuntime } from "./app/kernelSourceRuntime";
 import { coreErrorHandler } from './app/security/errorHandler';
 import { initializeDataSource, AppDataSource } from "./core/datasource";
 import { CryptoService } from "./core/security/CryptoService";
@@ -22,6 +22,7 @@ import { OrchestrationController } from "./app/controllers/OrchestrationControll
 import { MonitoringService } from "./core/monitoring/MonitoringService";
 import { TenantSessionStore } from "./core/security/TenantSessionStore";
 import { registerAuthSsoRoutes } from "./app/routes/authSsoRoutes";
+import { registerStudioPreviewRoutes } from './app/routes/studioPreviewRoutes';
 import { applyTenantDocumentBranding } from "./app/tenantDocumentBranding";
 import { buildTenantPwaManifest, buildTenantServiceWorker } from "./app/tenantPwa";
 import {
@@ -44,57 +45,6 @@ const coreCors = createCoreCors({
 });
 const coreAdminGuard = createCoreAdminGuard(() => process.env.CORE_ADMIN_TOKEN);
 
-const KERNEL_SOURCE_IMPORT_REACT =
-  'import React from "https://esm.sh/react@19?dev";';
-const KERNEL_SOURCE_IMPORT_REACT_DOM =
-  'import { createRoot } from "https://esm.sh/react-dom@19/client?dev";';
-
-const getKernelSourceCandidates = () => {
-  const rootDir = path.resolve(__dirname, "..");
-  return [
-    path.resolve(rootDir, "kernel", "src", "index.ts"),
-    path.resolve(rootDir, "src", "kernel", "src", "index.ts"),
-  ];
-};
-
-const readKernelSourceTs = async (): Promise<string> => {
-  const candidates = getKernelSourceCandidates();
-  for (const candidate of candidates) {
-    try {
-      return await fs.readFile(candidate, "utf8");
-    } catch {
-      // continue probing
-    }
-  }
-  throw new Error("Kernel source file not found");
-};
-
-const buildKernelSourceRuntime = async (): Promise<string> => {
-  const sourceTs = await readKernelSourceTs();
-  const patchedSource = sourceTs
-    .replace(
-      /import\s+React\s+from\s+["']react["'];?/,
-      KERNEL_SOURCE_IMPORT_REACT
-    )
-    .replace(
-      /import\s*\{\s*createRoot\s*\}\s*from\s*["']react-dom\/client["'];?/,
-      KERNEL_SOURCE_IMPORT_REACT_DOM
-    );
-
-  const transformed = transformSync(patchedSource, {
-    loader: "ts",
-    format: "esm",
-    target: "es2020",
-    sourcemap: "inline",
-    sourcefile: "kernel/src/index.ts",
-    jsx: "transform",
-    jsxFactory: "React.createElement",
-    jsxFragment: "React.Fragment",
-  });
-
-  return `${transformed.code}\nwindow.Kernel = Kernel;\nwindow.__IDP_KERNEL_BUILD__ = "dev-source";\n`;
-};
-
 // CORS for routes intended to be called cross-origin. Production callers must
 // be listed in CORE_ALLOWED_ORIGINS; localhost remains open in development.
 app.use(["/api", "/auth", "/admin"], coreCors);
@@ -105,7 +55,7 @@ app.use(express.urlencoded({ extended: true }));
 if (isDevelopmentEnv) {
   app.get("/kernel-source.js", async (_req, res) => {
     try {
-      const js = await buildKernelSourceRuntime();
+      const js = await buildKernelSourceRuntime(__dirname);
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
       res.status(200).send(js);
@@ -203,6 +153,10 @@ const bootstrap = async () => {
     sessionStore: tenantSessionStore,
     sessionCookieName: CORE_SSO_COOKIE_NAME,
   });
+  const previewAuthGuard = OptionalAuthGuard(AppDataSource, cryptoService, {
+    sessionStore: tenantSessionStore, sessionCookieName: CORE_SSO_COOKIE_NAME,
+    allowStudioPreview: true,
+  });
 
   const sessionCookieOptions = {
     httpOnly: true,
@@ -224,6 +178,7 @@ const bootstrap = async () => {
   app.use(monitoringService.middleware());
 
   app.post("/admin/tenants", coreAdminGuard, adminController.createTenant);
+  registerStudioPreviewRoutes(app, AppDataSource, cryptoService);
 
   registerAuthSsoRoutes({
     app,
@@ -250,7 +205,7 @@ const bootstrap = async () => {
       uiEntityController,
       tenantAclController,
       orchestrationController,
-      optionalAuthGuard
+      previewAuthGuard
     )
   );
 
@@ -297,7 +252,7 @@ const bootstrap = async () => {
     }
   });
 
-  app.all("*", contextMiddleware, optionalAuthGuard, dispatcher.handle);
+  app.all("*", contextMiddleware, previewAuthGuard, dispatcher.handle);
 
   app.use(coreErrorHandler);
 

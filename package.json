@@ -7,7 +7,7 @@
     "build:shared": "tsc -p ../packages/shared/tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "build:all": "npm run build:shared && npm run build",
-    "test": "npm run test:security && npm run test:tenant-provisioning && npm run test:sso-primitives && npm run test:registry-naming && npm run test:registry-source && npm run test:preview",
+    "test": "npm run test:security && npm run test:tenant-provisioning && npm run test:sso-primitives && npm run test:registry-naming && npm run test:registry-source && npm run test:preview && npm run test:adapter-config && npm run test:kernel-source && npm run test:studio-preview",
     "test:security": "ts-node --transpile-only tests/coreHttpSecurity.test.ts",
     "test:tenant-provisioning": "ts-node --transpile-only tests/tenantProvisioning.test.ts",
     "test:sso-primitives": "ts-node --transpile-only tests/ssoPrimitives.test.ts",
@@ -23,7 +23,10 @@
     "db:diff": "node ../packages/shared/dist/database/cli.js diff --target core",
     "db:migrate": "node ../packages/shared/dist/database/cli.js migrate --target core",
     "db:adopt": "node ../packages/shared/dist/database/cli.js adopt --target core",
-    "test:preview": "ts-node --transpile-only tests/devPreviewAccess.test.ts"
+    "test:preview": "ts-node --transpile-only tests/devPreviewAccess.test.ts",
+    "test:adapter-config": "ts-node --transpile-only tests/adapterConnectionConfig.test.ts",
+    "test:kernel-source": "ts-node --transpile-only tests/kernelSourceRuntime.test.ts",
+    "test:studio-preview": "ts-node --transpile-only tests/studioPreview.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1149.0",

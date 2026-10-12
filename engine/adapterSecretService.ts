@@ -189,6 +189,9 @@ export class AdapterSecretService {
     if (!normalized.user && typeof normalized.username === 'string') {
       normalized.user = normalized.username;
     }
+    if (!normalized.username && typeof normalized.user === 'string') {
+      normalized.username = normalized.user;
+    }
     return normalized;
   }
 
