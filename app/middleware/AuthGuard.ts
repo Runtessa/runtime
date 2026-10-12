@@ -11,6 +11,7 @@ export interface AuthGuardOptions {
   publicPaths?: RegExp[];
   sessionStore?: TenantSessionStore;
   sessionCookieName?: string;
+  allowStudioPreview?: boolean;
 }
 
 const resolveAccountFromSession = async (
@@ -140,6 +141,10 @@ export const AuthGuard =
         return res.status(401).json({ error: "Invalid token" });
       }
 
+      if (payload.metadata?.purpose === 'studio-preview' && !options.allowStudioPreview) {
+        return res.status(403).json({ error: 'Preview credentials cannot manage runtime resources' });
+      }
+
       req.tokenPayload = payload;
       req.account = userFromTokenPayload(payload);
 
@@ -178,6 +183,10 @@ export const OptionalAuthGuard =
       const payload = cryptoService.verifyToken(token);
       if (!payload || payload.tenantId !== req.tenant.id) {
         return res.status(401).json({ error: "Invalid token" });
+      }
+
+      if (payload.metadata?.purpose === 'studio-preview' && !options.allowStudioPreview) {
+        return res.status(403).json({ error: 'Preview credentials cannot manage runtime resources' });
       }
 
       req.tokenPayload = payload;

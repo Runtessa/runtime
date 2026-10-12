@@ -12,7 +12,9 @@ export const isDeveloperAccess = (req: TenantRequest): boolean => {
     return false;
   }
   const role = String(req.account.role ?? '').trim().toUpperCase();
-  if (role !== 'DEVELOPER' && role !== 'ADMIN') return false;
+  const studioPreview = req.tokenPayload.metadata?.purpose === 'studio-preview' &&
+    req.tokenPayload.metadata?.previewRead === true;
+  if (!studioPreview && role !== 'DEVELOPER' && role !== 'ADMIN') return false;
 
   const previewHeader = req.headers['x-dev-preview'];
   if (previewHeader !== undefined) {

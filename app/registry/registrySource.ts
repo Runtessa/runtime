@@ -2,6 +2,7 @@ import { transformSync } from "esbuild";
 
 type UiPackageLike = {
   name: string;
+  entryPath?: string | null;
   fileExtension?: string | null;
   sourceCode?: { code?: string | null } | null;
 };
@@ -143,6 +144,11 @@ export const resolveDraftRuntimeSource = (
   compiled: string,
   preferSource: boolean
 ) => {
+  // Shared projects compile their entrypoint together with local modules and
+  // styles. Recompiling only the entry source discards those bundled files.
+  if (pkg.entryPath && compiled.trim()) {
+    return repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
+  }
   if (!preferSource) {
     return repairUiCompiledSource(pkg.name, compiled, pkg.fileExtension);
   }

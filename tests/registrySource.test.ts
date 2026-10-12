@@ -52,4 +52,11 @@ const fallbackSource = resolveDraftRuntimeSource({
 } as any, "function Fallback(){}", true);
 assert(fallbackSource.includes("exports.default = Fallback"));
 
+const sharedBundle = 'const __modules = { "src/button.jsx": function() { return "shared control"; } }; module.exports = { Button: __modules["src/button.jsx"] };';
+const sharedDraft = resolveDraftRuntimeSource({
+  name: 'taskflow-controls', entryPath: 'index.jsx', fileExtension: 'jsx',
+  sourceCode: { code: 'module.exports = require("./src/button");' },
+}, sharedBundle, true);
+assert.equal(sharedDraft, sharedBundle, 'latest shared drafts must retain their compiled local modules');
+
 console.log("registry source regression checks passed");

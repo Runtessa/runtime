@@ -15,6 +15,14 @@ assert.equal(isDeveloperAccess(request('USER', { 'x-dev-preview': 'true' })), fa
 assert.equal(isDeveloperAccess(request('DEVELOPER')), true);
 assert.equal(isDeveloperAccess(request('ADMIN', { 'x-dev-preview': 'true' })), true);
 assert.equal(isDeveloperAccess(request('ADMIN', { 'x-dev-preview': 'false' })), false);
+const previewReader = request('USER', { 'x-dev-preview': 'true' });
+previewReader.tokenPayload.metadata = { purpose: 'studio-preview', previewRead: true };
+assert.equal(isDeveloperAccess(previewReader), true);
+previewReader.headers['x-dev-preview'] = 'false';
+assert.equal(isDeveloperAccess(previewReader), false);
+previewReader.headers['x-dev-preview'] = 'true';
+previewReader.tokenPayload.metadata.previewRead = false;
+assert.equal(isDeveloperAccess(previewReader), false);
 
 // Verify the real registry route stacks authenticate before consulting draft access.
 const noOp = (_req: any, _res: any, next: any) => next();
