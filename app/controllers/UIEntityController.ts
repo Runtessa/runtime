@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { generateVersion } from '../../common/version';
 import { publishedCache } from '../../core/publishedCache';
+import { publishArtifact } from '../publication/publishArtifact';
 import { UIPackage, UIPackageRevision, SourceCode, CompiledCode } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
@@ -249,30 +250,10 @@ export class UIEntityController {
   publish = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
       this.ensureTenant(req);
-      const repo = this.dataSource.getRepository(UIPackage);
-      const pkg = await repo.findOne({
-        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
-        relations: ['sourceCode', 'compiledCode'],
-      });
-      if (!pkg) {
-        return res.status(404).json({ error: 'UI entity not found' });
-      }
-
-      pkg.publishedVersion = generateVersion();
-      pkg.publishedSourceCode = pkg.sourceCode;
-      pkg.publishedCompiledCode = pkg.compiledCode;
-      pkg.publishedDependencies = pkg.dependencies ?? [];
-      pkg.publishedFileExtension = pkg.fileExtension;
-      pkg.publishedAt = new Date();
-      await repo.save(pkg);
-
-      await publishedCache.del(this.registryCacheKey(req.tenant!.id, pkg.name, 'latest'));
-      await publishedCache.del(this.registryCacheKey(req.tenant!.id, pkg.name, pkg.version));
-
-      return res.json(this.serialize(pkg));
-    } catch (error) {
-      next(error);
-    }
+      const result = await publishArtifact(this.dataSource, 'ui', req.tenant!.id, req.params.id);
+      for (const key of result.cacheKeys) await publishedCache.del(key);
+      return res.json(this.serialize(result.record));
+    } catch (error) { next(error); }
   };
 
   private ensureTenant(req: TenantRequest) {

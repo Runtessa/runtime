@@ -52,11 +52,12 @@ export const registryCacheKey = (
   scope: RegistryScope,
   tenantId: string | undefined,
   name: string,
-  version: string
+  version: string,
+  publication?: { id: string; publishedVersion?: string | null },
 ) => {
   const encoded = encodeURIComponent(name);
-  if (scope === 'tenant' && tenantId) {
-    return `registry:tenant:${tenantId}:${encoded}:${version}`;
-  }
-  return `registry:global:${encoded}:${version}`;
+  const base = scope === 'tenant' && tenantId
+    ? `registry:tenant:${tenantId}:${encoded}:${version}`
+    : `registry:global:${encoded}:${version}`;
+  return publication ? `${base}:${publication.id}:${publication.publishedVersion}` : base;
 };
