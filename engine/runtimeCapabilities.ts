@@ -7,20 +7,39 @@ import { RuntimeAdapterConnections } from './runtimeAdapterConnections';
 import { resolveRuntimeStageFromEnv } from './adapterSecretRefs';
 import { loadOrmModels } from './ormAdapterHelpers';
 import { resolveTenantDirectoryAuthConfig } from './adapterTenantDirectoryConfig';
+import { validateTenantPostgresConfig } from '@idp/shared/dist/runtime/postgres-config';
+import { createRedisCapability } from './runtimeRedisCapability';
 
 export const createRuntimeCapabilities = (dataSource: DataSource, crypto: CryptoService, tenant: Tenant, allowDraft: boolean) => {
   const secrets = new AdapterSecretService(dataSource, crypto, resolveRuntimeStageFromEnv());
   const connections = new RuntimeAdapterConnections(secrets);
-  return async (operation: string, value: any): Promise<unknown> => {
-    if (operation === 'models') return loadOrmModels(dataSource, tenant);
+  const redis = createRedisCapability(tenant, secrets, connections);
+  const configurations = new Map<string, Promise<string>>();
+  const call = async (operation: string, value: any): Promise<unknown> => {
+    if (operation === 'redis') return redis.call(value);
+    if (operation === 'models') {
+      if (typeof value?.adapterKey !== 'string') throw new Error('Invalid model capability');
+      const [adapter, ...rest] = value.adapterKey.split(':');
+      connections.ensureAdapterAccess(tenant, adapter, rest.join(':'));
+      return loadOrmModels(dataSource, tenant, value.adapterKey, allowDraft);
+    }
     if (operation === 'adapter-config') {
       if (!value || !['postgres', 'mysql', 'mssql', 'redis', 'kafka', 's3'].includes(value.adapter) ||
-          typeof value.key !== 'string' || !['read', 'write'].includes(value.mode)) throw new Error('Invalid adapter capability');
+          typeof value.key !== 'string' || value.key.length > 200 || !['read', 'write'].includes(value.mode)) throw new Error('Invalid adapter capability');
       // The parent owns the tenant and grants. Never accept them from child code.
       connections.ensureAdapterAccess(tenant, value.adapter, value.key);
-      const raw = await secrets.resolveSecretValue(tenant, value.adapter, value.key, value.mode);
-      const selected = secrets.selectReadWriteConfig(raw, value.mode);
-      return typeof selected === 'string' ? selected : JSON.stringify(selected);
+      if (value.adapter === 'redis') throw new Error('Redis credentials stay in the parent; use the scoped adapter');
+      const cacheKey = JSON.stringify([value.adapter, value.key, value.mode]);
+      if (!configurations.has(cacheKey)) {
+        if (configurations.size >= 16) throw new Error('Adapter configuration budget exceeded');
+        configurations.set(cacheKey, (async () => {
+          const raw = await secrets.resolveSecretValue(tenant, value.adapter, value.key, value.mode);
+          const selected = secrets.selectReadWriteConfig(raw, value.mode);
+          if (value.adapter === 'postgres') await validateTenantPostgresConfig(selected);
+          return typeof selected === 'string' ? selected : JSON.stringify(selected);
+        })());
+      }
+      return configurations.get(cacheKey)!;
     }
     if (operation === 'directory-config') return resolveTenantDirectoryAuthConfig(tenant, secrets);
     if (operation === 'shared-package') {
@@ -40,4 +59,5 @@ export const createRuntimeCapabilities = (dataSource: DataSource, crypto: Crypto
     }
     throw new Error('Runtime capability denied');
   };
+  return Object.assign(call, { dispose: () => redis.dispose() });
 };

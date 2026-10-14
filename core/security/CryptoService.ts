@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, scrypt, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, scrypt, timingSafeEqual } from 'crypto';
 import { promisify } from 'util';
+import { encryptSecretPayload, decryptSecretPayload, previousEncryptionKeys } from '@idp/shared/dist/security/secret-crypto';
 
 const scryptAsync = promisify(scrypt);
 
@@ -53,31 +54,11 @@ export class CryptoService {
   }
 
   encryptSecret(value: string): EncryptedPayload {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-    const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-    const authTag = cipher.getAuthTag();
-
-    return {
-      iv: iv.toString('hex'),
-      authTag: authTag.toString('hex'),
-      encryptedValue: encrypted.toString('hex'),
-    };
+    return encryptSecretPayload(value, this.encryptionKey);
   }
 
   decryptSecret(payload: EncryptedPayload): string {
-    const decipher = createDecipheriv(
-      'aes-256-gcm',
-      this.encryptionKey,
-      Buffer.from(payload.iv, 'hex'),
-    );
-    decipher.setAuthTag(Buffer.from(payload.authTag, 'hex'));
-
-    const decrypted = Buffer.concat([
-      decipher.update(Buffer.from(payload.encryptedValue, 'hex')),
-      decipher.final(),
-    ]);
-    return decrypted.toString('utf8');
+    return decryptSecretPayload(payload, [this.encryptionKey, ...previousEncryptionKeys()]);
   }
 
   // Backwards-compatible aliases (avoid breaking callers)

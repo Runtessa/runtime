@@ -14,6 +14,7 @@ import {
 import { CircuitBreaker } from '../core/resilience/CircuitBreaker';
 import { CryptoService } from '../core/security/CryptoService';
 import { Tenant } from '@idp/shared';
+import type { OrmModel } from '@idp/shared';
 import { CompilerAdapter } from './adapters/CompilerAdapter';
 import { loadOrmEntitiesFromModels } from '../core/orm-loader';
 export * from './adapterTypes';
@@ -42,6 +43,7 @@ export class AdapterFactory {
   constructor(private readonly dataSource: DataSource, private readonly cryptoService: CryptoService,
     secretService?: AdapterSecretService,
     private readonly directoryConfig?: () => Promise<TenantDirectoryAuthConfig>,
+    private readonly modelProvider?: (tenant: Tenant, adapterKey: string) => Promise<OrmModel[]>,
   ) {
     this.compilerAdapter = new CompilerAdapter();
     this.runtimeStage = resolveRuntimeStageFromEnv();
@@ -121,13 +123,14 @@ export class AdapterFactory {
     }
     this.connections.ensureAdapterAccess(tenant, adapter, key);
 
-    const models = await loadOrmModels(this.dataSource, tenant);
+    const models = this.modelProvider ? await this.modelProvider(tenant, `${adapter}:${key.trim().toLowerCase()}`)
+      : await loadOrmModels(this.dataSource, tenant, `${adapter}:${key.trim().toLowerCase()}`);
     if (!models.length) {
       throw new Error('No ORM models defined for tenant');
     }
 
     const modelsKey = models
-      .map((model) => `${model.id}:${model.updatedAt?.getTime?.() ?? ''}`)
+      .map((model) => `${model.id}:${model.updatedAt?.getTime?.() ?? ''}:${(model as any).activeRevision || ''}:${model.compiledCode?.code || ''}`)
       .join('|');
 
     const secretVal = await this.secretService.resolveSecretValue(tenant, adapter, key, mode);
@@ -171,17 +174,26 @@ export class AdapterFactory {
     }
 
     const dataSource = new DataSource({
-      type: adapter as 'postgres' | 'mysql' | 'mssql',
       ...(typeof config === 'string'
         ? { url: config }
         : this.secretService.normalizeDbConfig(config as Record<string, unknown>)),
-      entities,
-      synchronize: false,
-      logging: false,
+      type: adapter as 'postgres' | 'mysql' | 'mssql', entities,
+      synchronize: false, dropSchema: false, migrationsRun: false, installExtensions: false,
+      migrations: [], subscribers: [], cache: false, logging: false,
     } as any);
 
     if (!dataSource.isInitialized) {
       await dataSource.initialize();
+    }
+    const revision = (models[0] as any).activeRevision;
+    if (revision) {
+      try {
+        const marker = await dataSource.query('SELECT id FROM runtessa_model_operations WHERE id = $1', [revision]);
+        if (!marker.length) throw new Error('Model activation is missing from the configured tenant database');
+      } catch {
+        await dataSource.destroy();
+        throw Object.assign(new Error('Activate the models on the configured tenant database before serving this ORM'), { statusCode: 409 });
+      }
     }
 
     const getRepository = (name: string) => {

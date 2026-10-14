@@ -32,13 +32,15 @@ export class SandboxRunner {
           tenant: { id: context.tenant.id, hostname: context.tenant.hostname, adapterAccess: context.tenant.adapterAccess },
           allowDraftSharedModules: Boolean(context.allowDraftSharedModules), timeoutMs: effectiveTimeout,
         },
-        timeoutMs: effectiveTimeout, memoryMb: effectiveMemory, call: context.capabilities,
+        timeoutMs: effectiveTimeout, memoryMb: effectiveMemory, call: context.capabilities, allowPublicHttp: true,
       });
     } catch (error) {
       const failure = error as Error & { statusCode?: number };
       const status = Number(failure.statusCode);
       throw new AppError(failure.message || 'Restricted runtime failed',
         Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500);
+    } finally {
+      await context.capabilities?.dispose?.();
     }
   }
 

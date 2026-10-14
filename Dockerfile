@@ -34,6 +34,7 @@ COPY .docker-build/core/public /app/public
 
 ENV NODE_ENV=production
 ENV PORT=3005
+ENV HOST=0.0.0.0
 
 EXPOSE 3005
 
