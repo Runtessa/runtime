@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { generateVersion } from '../../common/version';
 import { publishedCache } from '../../core/publishedCache';
+import { publishArtifact } from '../publication/publishArtifact';
 import { HttpMethod, ModuleEntity, ModuleRevision, SourceCode, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 
@@ -236,33 +237,10 @@ export class ModuleController {
   publish = async (req: TenantRequest, res: Response, next: NextFunction) => {
     try {
       this.ensureTenant(req);
-      const repo = this.dataSource.getRepository(ModuleEntity);
-      const mod = await repo.findOne({
-        where: { id: req.params.id, tenant: { id: req.tenant!.id } },
-        relations: ['sourceCode'],
-      });
-      if (!mod) {
-        return res.status(404).json({ error: 'Module not found' });
-      }
-
-      const previousPublishedMethod = mod.publishedMethod ?? mod.method;
-      const nextPublishedMethod = mod.method;
-
-      mod.publishedVersion = generateVersion();
-      mod.publishedRoutePath = mod.routePath;
-      mod.publishedMethod = mod.method;
-      mod.publishedSourceCode = mod.sourceCode;
-      mod.publishedFileExtension = mod.fileExtension;
-      mod.publishedAt = new Date();
-      await repo.save(mod);
-
-      await publishedCache.del(this.moduleCacheKey(req.tenant!.id, previousPublishedMethod));
-      await publishedCache.del(this.moduleCacheKey(req.tenant!.id, nextPublishedMethod));
-
-      return res.json(this.serialize(mod));
-    } catch (error) {
-      next(error);
-    }
+      const result = await publishArtifact(this.dataSource, 'module', req.tenant!.id, req.params.id);
+      for (const key of result.cacheKeys) await publishedCache.del(key);
+      return res.json(this.serialize(result.record));
+    } catch (error) { next(error); }
   };
 
   private ensureTenant(req: TenantRequest) {

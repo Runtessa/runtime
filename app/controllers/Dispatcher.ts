@@ -2,13 +2,13 @@ import { NextFunction, Response } from 'express';
 import { DataSource } from 'typeorm';
 import { AppError } from '../../common/AppError';
 import { isDeveloperAccess } from '../../common/devAccess';
-import { publishedCache } from '../../core/publishedCache';
 import { AdapterFactory } from '../../engine/AdapterFactory';
 import { SandboxRunner, SandboxRequestContext } from '../../engine/SandboxRunner';
 import { GlobalModuleEndpoint, GlobalModulePackage, HttpMethod, ModuleEntity, Tenant } from '@idp/shared';
 import { TenantRequest } from '../../types/RequestContext';
 import { resolveGlobalDataSource } from '../../core/globalDatasource';
-import { findMatchingModule, matchPath, publishedModulesCacheKey } from './dispatcherPath';
+import { findMatchingModule, matchPath } from './dispatcherPath';
+import { loadPublishedModules } from './publishedModules';
 
 type ModuleLike = {
   routePath: string;
@@ -59,31 +59,7 @@ export class Dispatcher {
           fileExtension: mod.fileExtension,
         }));
       } else {
-        const cacheKey = publishedModulesCacheKey(req.tenant.id, normalizedMethod as HttpMethod);
-        const cached = await publishedCache.get<ModuleLike[]>(cacheKey);
-        if (cached) {
-          modules = cached;
-        } else {
-          const published = await moduleRepo.find({
-            where: { tenant: { id: req.tenant.id } },
-            relations: ['publishedSourceCode'],
-            order: { publishedRoutePath: 'ASC', routePath: 'ASC' },
-          });
-          modules = published
-            .filter(
-              (mod) =>
-                Boolean(mod.publishedSourceCode) &&
-                Boolean(mod.publishedVersion) &&
-                (mod.publishedMethod ?? mod.method) === (normalizedMethod as HttpMethod)
-            )
-            .map((mod) => ({
-              routePath: mod.publishedRoutePath ?? mod.routePath,
-              method: (mod.publishedMethod ?? mod.method) as HttpMethod,
-              code: mod.publishedSourceCode!.code,
-              fileExtension: mod.publishedFileExtension ?? mod.fileExtension,
-            }));
-          await publishedCache.set(cacheKey, modules);
-        }
+        modules = await loadPublishedModules(moduleRepo, req.tenant.id, normalizedMethod as HttpMethod);
       }
 
       const matchResult = findMatchingModule(modules, req.path);

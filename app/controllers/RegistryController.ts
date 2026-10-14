@@ -82,21 +82,6 @@ export class RegistryController {
         });
       };
 
-      if (!isDev) {
-        const tenantCacheKey = registryCacheKey('tenant', req.tenant.id, requestedName, versionToken);
-        const cached = await publishedCache.get<{
-          name: string;
-          version: string;
-          packageVersion?: string;
-          dependencies?: string[];
-          fileExtension?: string;
-          source?: string;
-        }>(tenantCacheKey);
-        if (cached) {
-          return res.json(this.formatRegistryResponse(cached, metadataOnly));
-        }
-      }
-
       const pkg = await findPackage(req.tenant.id);
 
       if (!pkg) {
@@ -116,9 +101,12 @@ export class RegistryController {
         return res.status(404).json({ error: 'Package not published' });
       }
 
+      const publishedKey = registryCacheKey('tenant', req.tenant.id, requestedName, versionToken, pkg);
+      const cached = await publishedCache.get<ReturnType<RegistryController['serializePublished']>>(publishedKey);
+      if (cached) return res.json(this.formatRegistryResponse(cached, metadataOnly));
       const payload = this.serializePublished(pkg);
       await publishedCache.set(
-        registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+        publishedKey,
         payload
       );
       return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -236,21 +224,6 @@ export class RegistryController {
         });
       };
 
-      if (!isDev) {
-        const globalCacheKey = registryCacheKey('global', undefined, requestedName, versionToken);
-        const cached = await publishedCache.get<{
-          name: string;
-          version: string;
-          packageVersion?: string;
-          dependencies?: string[];
-          fileExtension?: string;
-          source?: string;
-        }>(globalCacheKey);
-        if (cached) {
-          return res.json(this.formatRegistryResponse(cached, metadataOnly));
-        }
-      }
-
       const globalPkg = await findGlobalPackage();
       if (globalPkg) {
         if (isDev) {
@@ -265,13 +238,16 @@ export class RegistryController {
           );
         }
         if (this.hasPublished(globalPkg)) {
+          const publishedKey = registryCacheKey('global', undefined, requestedName, versionToken, globalPkg);
+          const cached = await publishedCache.get<ReturnType<RegistryController['serializePublished']>>(publishedKey);
+          if (cached) return res.json(this.formatRegistryResponse(cached, metadataOnly));
           const payload = {
             ...this.serializePublished(globalPkg),
             cacheKey: this.resolvePackageCacheKey(globalPkg),
             name: requestedName, // Use requested name
           };
           await publishedCache.set(
-            registryCacheKey('global', undefined, requestedName, versionToken),
+            publishedKey,
             payload
           );
           return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -290,25 +266,6 @@ export class RegistryController {
       }
 
       if (req.tenant) {
-        if (!isDev) {
-          const tenantCacheKey = registryCacheKey(
-            'tenant',
-            req.tenant.id,
-            requestedName,
-            versionToken
-          );
-          const cached = await publishedCache.get<{
-            name: string;
-            version: string;
-            packageVersion?: string;
-            dependencies?: string[];
-            fileExtension?: string;
-            source?: string;
-          }>(tenantCacheKey);
-          if (cached) {
-            return res.json(this.formatRegistryResponse(cached, metadataOnly));
-          }
-        }
 
         const pkg = await findPackage(req.tenant.id);
         if (pkg) {
@@ -324,13 +281,16 @@ export class RegistryController {
             );
           }
           if (this.hasPublished(pkg)) {
+            const publishedKey = registryCacheKey('tenant', req.tenant.id, requestedName, versionToken, pkg);
+            const cached = await publishedCache.get<ReturnType<RegistryController['serializePublished']>>(publishedKey);
+            if (cached) return res.json(this.formatRegistryResponse(cached, metadataOnly));
             const payload = {
               ...this.serializePublished(pkg),
               cacheKey: this.resolvePackageCacheKey(pkg),
               name: requestedName, // Use requested name
             };
             await publishedCache.set(
-              registryCacheKey('tenant', req.tenant.id, requestedName, versionToken),
+              publishedKey,
               payload
             );
             return res.json(this.formatRegistryResponse(payload, metadataOnly));
@@ -484,7 +444,6 @@ export class RegistryController {
     };
   }
 
-
   private resolvePackageCacheKey(pkg: UIPackage | GlobalUIPackage | GlobalModulePackage) {
     const version = pkg.publishedVersion || pkg.version;
     const publishedAt = this.dateToCachePart(pkg.publishedAt);
@@ -501,7 +460,6 @@ export class RegistryController {
     if (value instanceof Date) return value.toISOString();
     return String(value);
   }
-
 
   private shouldPreferDraftSource(req: TenantRequest) {
     const raw = req.headers['x-dev-source'];
@@ -560,7 +518,6 @@ export class RegistryController {
     };
   }
 
-
   private serializePublished(pkg: UIPackage | GlobalUIPackage) {
     const publishedCompiled = this.requirePublishedCompiledCode(pkg);
     const ext = pkg.publishedFileExtension ?? pkg.fileExtension;
@@ -574,7 +531,6 @@ export class RegistryController {
       fileExtension: ext,
     };
   }
-
 
   private requireCompiledCode(pkg: UIPackage | GlobalUIPackage) {
     if (!pkg.compiledCode?.code) {
