@@ -13,7 +13,14 @@ export const parseOrmAdapterKey = (raw: string | undefined | null) => {
   return { adapter: 'postgres', key: trimmed };
 };
 
-export const loadOrmModels = async (dataSource: DataSource, tenant: Tenant) => {
+export const loadOrmModels = async (dataSource: DataSource, tenant: Tenant, adapterKey: string, draft = false) => {
+  if (!draft) {
+    const [state] = await dataSource.query('SELECT active_models, active_revision FROM runtessa_model_state WHERE tenant_id = $1 AND adapter_key = $2', [tenant.id, adapterKey]);
+    if (!state?.active_models?.length) throw Object.assign(new Error('Activate the tenant models before using the published ORM'), { statusCode: 409 });
+    return state.active_models.map((model: { path: string; code: string }) => ({
+      path: model.path, compiledCode: { code: model.code }, sourceCode: null, activeRevision: state.active_revision,
+    })) as OrmModel[];
+  }
   const repo = dataSource.getRepository(OrmModel);
   return repo.find({
     where: { tenant: { id: tenant.id } },

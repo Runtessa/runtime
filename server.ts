@@ -256,7 +256,7 @@ const bootstrap = async () => {
 
   app.use(coreErrorHandler);
 
-  app.listen(port, () => {
+  app.listen(port, process.env.HOST || '127.0.0.1', () => {
     console.log(`FaaS runtime listening on port ${port}`);
   });
 };

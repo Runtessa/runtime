@@ -94,7 +94,8 @@ export const executeSandboxModule = async (
     ]);
     return normalizeSandboxResult(result);
   } catch (error) {
+    const status = Number((error as { statusCode?: number }).statusCode);
     throw new AppError(`Module error: ${(error as Error).message}`,
-      (error as { statusCode?: number }).statusCode === 400 ? 400 : 500);
+      Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500);
   }
 };

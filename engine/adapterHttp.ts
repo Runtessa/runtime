@@ -1,4 +1,5 @@
 import https from 'https';
+import http from 'http';
 import { HttpRequestOptions, HttpResponse } from './adapterTypes';
 
 export const createHttpAdapter = (
@@ -11,6 +12,8 @@ export const createHttpAdapter = (
       () =>
         new Promise<HttpResponse>((resolve, reject) => {
           const parsedUrl = new URL(url);
+          if (!['http:', 'https:'].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password)
+            throw new Error('Invalid HTTP destination');
           const headers: Record<string, string> = { ...(options?.headers ?? {}) };
 
           const body =
@@ -29,14 +32,20 @@ export const createHttpAdapter = (
           const requestOptions: https.RequestOptions = {
             method: options?.method ?? 'GET',
             hostname: parsedUrl.hostname,
-            port: parsedUrl.port || 443,
+            port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
             path: `${parsedUrl.pathname}${parsedUrl.search}`,
             headers,
           };
 
-          const req = https.request(requestOptions, (res) => {
+          const req = (parsedUrl.protocol === 'https:' ? https : http).request(requestOptions, (res) => {
             const chunks: Buffer[] = [];
-            res.on('data', (chunk) => chunks.push(chunk));
+            let bytes = 0;
+            res.on('data', (chunk) => {
+              bytes += chunk.length;
+              if (bytes > 4 * 1024 * 1024) { res.destroy(new Error('HTTP response exceeds runtime budget')); return; }
+              chunks.push(chunk);
+            });
+            res.on('error', reject);
             res.on('end', () => {
               resolve({
                 statusCode: res.statusCode ?? 0,
@@ -48,7 +57,7 @@ export const createHttpAdapter = (
 
           req.on('error', reject);
 
-          req.setTimeout(options?.timeoutMs ?? 5000, () => {
+          req.setTimeout(Math.max(1, Math.min(Number(options?.timeoutMs) || 5000, 10000)), () => {
             req.destroy(new Error('HTTP request timed out'));
           });
 

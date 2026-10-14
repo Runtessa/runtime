@@ -28,7 +28,7 @@ export interface SandboxContext {
   adapters: SandboxAdapters;
   tenant?: Tenant;
   allowDraftSharedModules?: boolean;
-  capabilities?: (operation: string, value: any) => Promise<unknown>;
+  capabilities?: ((operation: string, value: any) => Promise<unknown>) & { dispose?: () => Promise<void> };
 }
 
 export interface SandboxResult {

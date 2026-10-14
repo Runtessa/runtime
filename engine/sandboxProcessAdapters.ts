@@ -33,6 +33,16 @@ export const buildProcessAdapters = (tenant: Tenant, allowDraft: boolean, call: 
     },
   } as unknown as DataSource;
   const secrets = new ProcessSecrets(call);
-  const factory = new AdapterFactory(source, null as unknown as CryptoService, secrets, async () => call('directory-config'));
-  return factory.build(tenant, { allowDraftSharedModules: allowDraft });
+  const factory = new AdapterFactory(source, null as unknown as CryptoService, secrets, async () => call('directory-config'),
+    async (_tenant, adapterKey) => (await call('models', { adapterKey })).map((model: any) => ({
+      ...model, updatedAt: model.updatedAt ? new Date(model.updatedAt) : undefined,
+    })));
+  const adapters = factory.build(tenant, { allowDraftSharedModules: allowDraft });
+  adapters.redis = async (key) => ({
+    get: (name) => call('redis', { key, command: 'get', name }),
+    set: (name, value, ttl) => call('redis', { key, command: 'set', name, value, ttl }),
+    del: (name) => call('redis', { key, command: 'del', name }),
+    publish: (name, value) => call('redis', { key, command: 'publish', name, value }),
+  });
+  return adapters;
 };

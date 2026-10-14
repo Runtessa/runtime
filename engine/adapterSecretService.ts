@@ -169,19 +169,16 @@ export class AdapterSecretService {
   }
 
   selectReadWriteConfig(secretVal: string, mode: 'read' | 'write') {
-    try {
-      const parsed = JSON.parse(secretVal);
-      if (!parsed || typeof parsed !== 'object') return secretVal;
-      if ('read' in parsed || 'write' in parsed) {
-        const readVal = (parsed as any).read;
-        const writeVal = (parsed as any).write;
-        const selected = mode === 'read' ? readVal ?? writeVal : writeVal ?? readVal;
-        return this.decryptPasswordMarkers(selected ?? secretVal);
-      }
-      return this.decryptPasswordMarkers(parsed);
-    } catch {
-      return secretVal;
+    let parsed: any;
+    try { parsed = JSON.parse(secretVal); } catch { return secretVal; }
+    if (!parsed || typeof parsed !== 'object') return secretVal;
+    if ('read' in parsed || 'write' in parsed) {
+      const readVal = (parsed as any).read;
+      const writeVal = (parsed as any).write;
+      const selected = mode === 'read' ? readVal ?? writeVal : writeVal ?? readVal;
+      return this.decryptPasswordMarkers(selected ?? secretVal);
     }
+    return this.decryptPasswordMarkers(parsed);
   }
 
   normalizeDbConfig(config: Record<string, unknown>) {
@@ -214,8 +211,7 @@ export class AdapterSecretService {
                 });
                 return;
               } catch {
-                next[key] = val;
-                return;
+                throw new Error('Adapter password could not be decrypted with the configured keys');
               }
             }
           }
